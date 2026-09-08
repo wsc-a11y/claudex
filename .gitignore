@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# runtime state
+~/.claudex/
+.claudex/
+
+# logs
+*.log
+logs/
+
+# editor
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# misc
+coverage/
+tmp/
+web/node_modules/

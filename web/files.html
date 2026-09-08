@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      files.html — the standalone "文件站" entry. Served by vite on port 5174
+      in dev (see web/scripts/dev.mjs + vite.files.config.ts) and built into
+      dist/ as a sibling of index.html so the claudex server's static hosting
+      exposes it at /files.html in production.
+
+      Same viewport treatment as index.html (layout stability over pinch-zoom).
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#cc785c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="文件站" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>文件站</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/files-main.tsx"></script>
+  </body>
+</html>

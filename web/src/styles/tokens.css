@@ -1,0 +1,160 @@
+/* ============================================================
+   Design Tokens — claudex
+   ============================================================
+   Single source of truth for all visual constants.
+   Tailwind config references these vars so changes propagate.
+
+   Colors stored as space-separated RGB triplets so Tailwind's
+   opacity modifier (`bg-canvas/60`) keeps working:
+     color: rgb(var(--c-canvas) / 0.6);
+
+   Dark mode (P4) will override under `[data-theme="dark"]`.
+   ============================================================ */
+
+:root {
+  /* ── Color primitives ─────────────────────────────────────── */
+  --c-canvas:       250 249 245;   /* #faf9f5  — main reading surface */
+  --c-paper:        245 242 234;   /* #f5f2ea  — raised panels / sidebar */
+  --c-ink:          31 30 29;      /* #1f1e1d  — default text */
+  --c-ink-soft:     58 56 53;      /* #3a3835  — secondary text */
+  --c-ink-muted:    107 104 98;    /* #6b6862  — tertiary / label */
+  --c-ink-faint:    154 150 142;   /* #9a968e  — placeholder / hint */
+  --c-line:         232 228 216;   /* #e8e4d8  — subtle border */
+  --c-line-strong:  217 210 192;   /* #d9d2c0  — strong border */
+
+  /* Accent — Klein orange */
+  --c-klein:        204 120 92;    /* #cc785c */
+  --c-klein-soft:   232 163 142;   /* #e8a38e */
+  --c-klein-ink:    143 74 53;     /* #8f4a35 */
+  --c-klein-wash:   246 227 218;   /* #f6e3da */
+
+  /* Semantic status */
+  --c-success:      63 145 66;     /* #3f9142 */
+  --c-success-wash: 227 239 224;   /* #e3efe0 */
+  --c-success-ink:  31 95 33;      /* #1f5f21 */
+  --c-warn:         217 119 6;     /* #d97706 */
+  --c-warn-wash:    251 238 207;   /* #fbeecf */
+  --c-warn-ink:     122 71 0;      /* #7a4700 */
+  --c-danger:       193 39 45;     /* #c1272d */
+  --c-danger-wash:  245 217 217;   /* #f5d9d9 */
+  --c-danger-ink:   122 29 33;     /* #7a1d21 */
+
+  /* Extended palette */
+  --c-indigo:       59 75 138;     /* #3b4b8a */
+  --c-indigo-wash:  221 225 240;   /* #dde1f0 */
+  --c-indigo-ink:   39 50 92;      /* #27325c */
+  --c-purple:       124 95 163;    /* #7c5fa3 */
+  --c-purple-wash:  234 226 242;   /* #eae2f2 */
+
+  /* ── Semantic surfaces ────────────────────────────────────── */
+  --surface-base:    var(--c-canvas);
+  --surface-raised:  var(--c-paper);
+  --surface-overlay: 255 255 255;  /* #ffffff — sheets / dialogs */
+
+  /* ── Type scale (pixel-fixed; match existing literal usage) ─ */
+  --fs-meta:       10px;    /* badges, captions, hints */
+  --fs-base:       11px;    /* default body */
+  --fs-body:       12px;    /* spacious body */
+  --fs-heading:    13px;    /* sub-heading */
+  --fs-subhead:    14px;    /* rare sub-heading */
+  --fs-title:      15px;    /* card title */
+  --fs-title-lg:   17px;    /* page title */
+  --fs-display:    19px;    /* hero number / big metric */
+  --fs-display-lg: 23px;    /* large display */
+  --fs-display-xl: 25px;    /* extra large display */
+
+  /* ── Radii ────────────────────────────────────────────────── */
+  --r-xs:    4px;
+  --r-sm:    6px;
+  --r-md:    8px;    /* default card / button */
+  --r-lg:   10px;    /* large card */
+  --r-xl:   12px;    /* sheet / dialog */
+  --r-2xl:  14px;    /* full overlay */
+  --r-full: 9999px;  /* pill / avatar */
+
+  /* ── Elevation (3-tier shadow) ────────────────────────────── */
+  --shadow-1:
+    0 1px 0 rgb(31 30 29 / 0.04),
+    0 1px 2px rgb(31 30 29 / 0.04);
+  --shadow-2:
+    0 1px 2px rgb(31 30 29 / 0.05),
+    0 4px 12px -4px rgb(31 30 29 / 0.08);
+  --shadow-3:
+    0 1px 2px rgb(31 30 29 / 0.04),
+    0 10px 40px -20px rgb(31 30 29 / 0.25);
+
+  /* ── Motion ───────────────────────────────────────────────── */
+  --duration-fast:  120ms;
+  --duration-base:  200ms;
+  --duration-slow:  320ms;
+  --ease-out:       cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:    cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Z-index scale ────────────────────────────────────────── */
+  --z-base:    0;
+  --z-raised:  10;
+  --z-sticky:  20;
+  --z-overlay: 40;
+  --z-modal:   60;
+  --z-toast:   70;
+}
+
+/* ── Desktop density (≥768px) ──────────────────────────────── */
+@media (min-width: 768px) {
+  :root {
+    --fs-meta:       11px;
+    --fs-base:       12px;
+    --fs-body:       13px;
+    --fs-heading:    14px;
+    --fs-subhead:    15px;
+    --fs-title:      16px;
+    --fs-title-lg:   18px;
+    --fs-display:    20px;
+    --fs-display-lg: 24px;
+    --fs-display-xl: 28px;
+  }
+}
+
+/* ── Dark mode (P4 — placeholder, not active yet) ──────────── */
+/* [data-theme="dark"] {
+  --c-canvas:       15 15 18;
+  --c-paper:        24 24 28;
+  --c-ink:          245 245 246;
+  --c-ink-soft:     200 200 206;
+  --c-ink-muted:    140 143 152;
+  --c-ink-faint:    90 92 100;
+  --c-line:         42 42 48;
+  --c-line-strong:  58 58 64;
+
+  --c-klein:        232 163 142;
+  --c-klein-soft:   204 120 92;
+  --c-klein-ink:    246 227 218;
+  --c-klein-wash:   50 32 26;
+
+  --c-success:      110 200 113;
+  --c-success-wash: 20 40 22;
+  --c-warn:         251 191 36;
+  --c-warn-wash:    50 38 10;
+  --c-danger:       248 113 113;
+  --c-danger-wash:  50 20 20;
+
+  --c-indigo:       129 140 210;
+  --c-indigo-wash:  28 32 52;
+  --c-indigo-ink:   180 188 230;
+  --c-purple:       168 148 200;
+  --c-purple-wash:  38 30 52;
+
+  --surface-base:    var(--c-canvas);
+  --surface-raised:  var(--c-paper);
+  --surface-overlay: 30 30 35;
+
+  --shadow-1:
+    0 1px 0 rgb(0 0 0 / 0.3),
+    0 1px 3px rgb(0 0 0 / 0.2);
+  --shadow-2:
+    0 1px 2px rgb(0 0 0 / 0.3),
+    0 4px 16px -4px rgb(0 0 0 / 0.4);
+  --shadow-3:
+    0 1px 3px rgb(0 0 0 / 0.3),
+    0 12px 48px -16px rgb(0 0 0 / 0.6);
+} */

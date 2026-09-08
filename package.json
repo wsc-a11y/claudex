@@ -1,0 +1,30 @@
+{
+  "name": "claudex",
+  "version": "0.4.1",
+  "private": true,
+  "description": "Remote Control for Claude Code — a browser front-end for the claude CLI on your own machine.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "node scripts/fix-node-pty-perms.mjs",
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm --filter @claudex/web run build",
+    "start": "cross-env NODE_ENV=production pnpm --filter @claudex/server exec tsx src/index.ts",
+    "serve": "pnpm build && pnpm start",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm --filter @claudex/server run test",
+    "server": "pnpm --filter @claudex/server",
+    "web": "pnpm --filter @claudex/web",
+    "shared": "pnpm --filter @claudex/shared",
+    "init": "pnpm --filter @claudex/server exec tsx src/bin/init.ts",
+    "reset-credentials": "pnpm --filter @claudex/server exec tsx src/bin/reset-credentials.ts",
+    "claudex:status": "pnpm --filter @claudex/server exec tsx src/bin/status.ts"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "typescript": "^5.6.3"
+  }
+}

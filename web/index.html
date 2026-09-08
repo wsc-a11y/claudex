@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      PWA manifest + apple-touch-icon so the page is installable to the home
+      screen. iOS Safari requires both the apple-touch-icon link AND a
+      manifest with icons to treat this as a first-class PWA (which is what
+      unlocks Web Push on iOS at all).
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <!--
+      maximum-scale=1 + user-scalable=no stop iOS Safari's "focus an input
+      with <16px text and the whole page zooms in forever" behavior.
+      Trade-off: users can't pinch-zoom the page for accessibility.
+      claudex is a single-user self-hosted tool and the owner decided
+      layout stability beats pinch-zoom here.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#cc785c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Claudex" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Claudex</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

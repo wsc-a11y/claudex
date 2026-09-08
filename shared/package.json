@@ -1,0 +1,25 @@
+{
+  "name": "@claudex/shared",
+  "version": "0.4.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts",
+    "./models": "./src/models.ts"
+  },
+  "scripts": {
+    "dev": "tsc --noEmit --watch --preserveWatchOutput",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
