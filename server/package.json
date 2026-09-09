@@ -16,7 +16,7 @@
     "status": "tsx src/bin/status.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.141",
     "@claudex/shared": "workspace:*",
     "@fastify/cookie": "^11.0.1",
     "@fastify/multipart": "^10.0.0",
