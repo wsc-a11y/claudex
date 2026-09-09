@@ -141,38 +141,75 @@ async function branchExists(projectPath: string, branch: string): Promise<boolea
  *
  * We do NOT delete the branch: the user may have work on it they want to
  * merge or inspect. That's a manual `git branch -D` when they're sure.
+ *
+ * Windows note: `git worktree remove` frequently hits a transient "Permission
+ * denied" — a freshly-created worktree's files can be briefly held by the
+ * antivirus scanner or a lagging handle. We retry a few times before giving
+ * up; the directory removal fallback below also retries for the same reason.
  */
 export async function removeWorktree(worktreePath: string): Promise<void> {
   // `git worktree remove` needs to run inside the main repo, not the worktree
   // itself. We find the main repo by walking up: a worktree's .git is a file
   // with a "gitdir:" pointer, but passing `cwd: worktreePath` works because
   // git resolves the superproject automatically.
-  try {
-    await execFileP("git", ["worktree", "remove", "--force", worktreePath], {
-      cwd: worktreePath,
-    });
-    return;
-  } catch (err) {
-    // If the directory is already gone from disk, `git worktree prune` on the
-    // parent repo is the right cleanup — but we don't know the parent here.
-    // Fall back to a plain rm so the caller's warning doesn't become a loop
-    // on every archive.
-    const stderr =
-      typeof (err as { stderr?: unknown }).stderr === "string"
-        ? ((err as { stderr: string }).stderr)
-        : String(err);
-    // Attempt a plain rm as a last resort — this covers the "user already
-    // deleted the directory" case where git errors with "is not a working
-    // tree".
+  let lastStderr = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+      await execFileP(
+        "git",
+        ["worktree", "remove", "--force", worktreePath],
+        { cwd: worktreePath },
+      );
+      return;
+    } catch (err) {
+      const stderr =
+        typeof (err as { stderr?: unknown }).stderr === "string"
+          ? ((err as { stderr: string }).stderr)
+          : String(err);
+      lastStderr = stderr;
+      // Only transient permission failures are worth a retry — anything else
+      // (e.g. "not a working tree", "unknown worktree") won't get better.
+      if (!/permission denied/i.test(stderr) || attempt === 2) break;
+      await new Promise((r) => setTimeout(r, 250));
     }
-    throw new WorktreeError(
-      `git worktree remove failed: ${stderr.trim().split("\n")[0]}`,
-      stderr,
-    );
+  }
+  // On Windows, `git worktree remove` frequently deletes the registration and
+  // then fails to delete the (briefly locked) working-tree files — a retry
+  // then reports "not a working tree". By that point the git side is done and
+  // only the directory removal is outstanding, so fall back to a plain rm.
+  // If the rm succeeds the remove's intent is fully met (dir gone, and any
+  // stray registration is harmless — `git worktree prune` reaps it). Only
+  // when the directory itself cannot be removed (still locked) do we surface
+  // the error for the caller's warning log.
+  try {
+    await rmRetry(worktreePath);
+    return;
+  } catch {
+    /* fall through to the throw */
+  }
+  throw new WorktreeError(
+    `git worktree remove failed: ${lastStderr.trim().split("\n")[0]}`,
+    lastStderr,
+  );
+}
+
+/**
+ * `rm -rf` with Windows-friendly retries. A recursive delete of a just-used
+ * tree can fail with EBUSY/EPERM while the filesystem releases handles
+ * (antivirus scans, indexer, lagging git subprocess) — a short retry loop
+ * clears most of those. Only ever removes the path itself, never follows
+ * junctions/symlinks into their targets.
+ */
+async function rmRetry(target: string): Promise<void> {
+  const rm = (await import("node:fs/promises")).rm;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      return;
+    } catch {
+      if (attempt === 2) throw new Error(`failed to remove ${target}`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
   }
 }
 
@@ -216,6 +253,14 @@ export function ensureWorktreeProjectLink(
   parentProjectPath: string,
   worktreePath: string,
   logger?: { warn: (obj: Record<string, unknown>, msg: string) => void },
+  /**
+   * Override the Claude Code home whose `projects/` dir receives the
+   * junction. Defaults to `os.homedir()` — the production layout. Tests
+   * pass a tmp dir so worktree-session creation on throwaway temp repos
+   * never writes into the real `~/.claude/projects` (it would leave
+   * `claudex-gitrepo-*` dirs + junctions behind once the repo is deleted).
+   */
+  claudeHomeDir?: string,
 ): void {
   if (process.platform !== "win32") return;
 
@@ -224,7 +269,11 @@ export function ensureWorktreeProjectLink(
     const wrongId = pathToProjectId(worktreePath);
     if (correctId === wrongId) return;
 
-    const claudeProjectsDir = path.join(os.homedir(), ".claude", "projects");
+    const claudeProjectsDir = path.join(
+      claudeHomeDir ?? os.homedir(),
+      ".claude",
+      "projects",
+    );
     const correctDir = path.join(claudeProjectsDir, correctId);
     const wrongDir = path.join(claudeProjectsDir, wrongId);
 

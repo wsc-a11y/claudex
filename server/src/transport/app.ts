@@ -77,6 +77,14 @@ export interface AppDeps {
    */
   cliProjectsRoot?: string;
   /**
+   * Override the Claude Code home whose `projects/` dir receives the Windows
+   * worktree→parent junction (`ensureWorktreeProjectLink`, sessions/worktree.ts).
+   * Defaults to the real `os.homedir()`. Tests pass a tmp dir so worktree
+   * sessions on throwaway temp repos never leave `claudex-gitrepo-*` dirs +
+   * junctions in the real `~/.claude/projects`.
+   */
+  claudeHomeDir?: string;
+  /**
    * Absolute path to the built web/dist directory. If set, the server
    * mounts those files at `/` and falls through to index.html for SPA
    * routes — so browsers can hit the server on a single port, which is
@@ -242,6 +250,7 @@ export async function buildApp(
     db: deps.db,
     manager,
     cliProjectsRoot: deps.cliProjectsRoot,
+    claudeHomeDir: deps.claudeHomeDir,
     audit,
     uploadsRoot,
   });

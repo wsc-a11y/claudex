@@ -43,6 +43,13 @@ export interface SessionsRoutesDeps {
    * path.
    */
   cliProjectsRoot?: string;
+  /**
+   * Override the Claude Code home whose `projects/` dir receives the
+   * Windows worktree→parent junction (`ensureWorktreeProjectLink`).
+   * Defaults to the real `os.homedir()`. Tests pass a tmp dir so
+   * worktree-session creation never pollutes `~/.claude/projects`.
+   */
+  claudeHomeDir?: string;
   audit: AuditStore;
   /**
    * Absolute path to the uploads root (normally `~/.claudex/uploads`). When
@@ -416,7 +423,12 @@ export async function registerSessionRoutes(
           });
           worktreePath = wt.path;
           branch = wt.branch;
-          ensureWorktreeProjectLink(project.path, wt.path, req.log);
+          ensureWorktreeProjectLink(
+            project.path,
+            wt.path,
+            req.log,
+            deps.claudeHomeDir,
+          );
         } catch (err) {
           if (err instanceof WorktreeError) {
             req.log.warn(

@@ -63,6 +63,15 @@ export async function bootstrapAuthedApp(
   opts?: {
     userClaudeDir?: string;
     cliProjectsRoot?: string;
+    /**
+     * Claude Code home override for the Windows worktree→parent junction
+     * (`ensureWorktreeProjectLink`). Defaults to a `claude-home` dir under
+     * the app's tmp stateDir so worktree tests never write junctions or
+     * dirs into the real `~/.claude/projects`. Pass the string `"REAL_HOME"`
+     * to opt into the production location (only if a test must assert on
+     * real-home behavior).
+     */
+    claudeHomeDir?: string | "REAL_HOME";
     vapid?: VapidKeys;
   },
 ): Promise<{
@@ -77,6 +86,10 @@ export async function bootstrapAuthedApp(
   const { config, log, cleanup } = tempConfig();
   const dbh = openDb(config, log);
   const jwtSecret = loadOrCreateJwtSecret(config);
+  const claudeHomeDir =
+    opts?.claudeHomeDir === "REAL_HOME"
+      ? undefined
+      : (opts?.claudeHomeDir ?? path.join(config.stateDir, "claude-home"));
   const { app, manager, scheduler } = await buildApp({
     db: dbh.db,
     jwtSecret,
@@ -85,6 +98,7 @@ export async function bootstrapAuthedApp(
     runnerFactory,
     userClaudeDir: opts?.userClaudeDir,
     cliProjectsRoot: opts?.cliProjectsRoot,
+    claudeHomeDir,
     vapid: opts?.vapid,
     stateDir: config.stateDir,
   });
