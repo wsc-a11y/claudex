@@ -1,6 +1,7 @@
 import {
   query,
   type Options,
+  type RewindFilesResult,
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -154,6 +155,14 @@ export class AgentRunner implements Runner {
           : {}),
       } as Record<string, string>,
       resume: this.opts.resumeSdkSessionId,
+      // File checkpointing — lets the bundled CLI snapshot files before
+      // every write, so the SDK's `rewindFiles` control request can restore
+      // them to any earlier user message. The CLI owns the whole mechanism
+      // (~/.claude/file-history/<session>/…, 30-day/100-checkpoint cleanup);
+      // claudex only flips the switch here and forwards rewindFiles calls.
+      // Sessions started before this option landed have no history and will
+      // report canRewind:false.
+      enableFileCheckpointing: true,
       ...(systemPromptOption ? { systemPrompt: systemPromptOption } : {}),
       // Per-session thinking-effort level. The SDK maps this onto its
       // adaptive-thinking budget for us; `medium` matches the previous
@@ -726,6 +735,27 @@ export class AgentRunner implements Runner {
     // NEXT start() picks it up; an in-flight query keeps the budget it was
     // launched with. That mirrors how model changes propagate today.
     this.effort = effort;
+  }
+
+  /**
+   * Rewind tracked files to their state at a specific user message (the
+   * CLI's checkpoint feature, surfaced via the SDK control request of the
+   * same name). Only usable while this runner's CLI child is alive and the
+   * session has checkpoints on record — a session whose first message
+   * predates `enableFileCheckpointing` has none and returns
+   * `canRewind:false` rather than erroring. Throws `runner_not_started`
+   * when the SDK handle hasn't been created yet (caller falls back to a
+   * resume-based rewind in that case).
+   */
+  async rewindFiles(
+    userMessageId: string,
+    dryRun?: boolean,
+  ): Promise<RewindFilesResult> {
+    if (!this.sdkHandle) throw new Error("runner_not_started");
+    return this.sdkHandle.rewindFiles(
+      userMessageId,
+      dryRun ? { dryRun: true } : undefined,
+    );
   }
 
   async dispose(): Promise<void> {

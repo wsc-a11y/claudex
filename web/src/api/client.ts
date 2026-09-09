@@ -10,6 +10,7 @@ import type {
   CreateSessionRequest,
   CreateSideSessionRequest,
   ForkSessionRequest,
+  RewindSessionResult,
   ImportAllResponse,
   PendingDiffsResponse,
   Project,
@@ -291,6 +292,22 @@ export const api = {
     return request<{ session: Session }>(`/api/sessions/${id}/fork`, {
       method: "POST",
       json: opts ?? {},
+    });
+  },
+  /**
+   * Roll the session's tracked files back to their state at the user message
+   * with `upToSeq` (the bundled CLI's checkpoint feature — conversation
+   * history is untouched). `dryRun: true` previews without touching disk;
+   * omit it to execute. Server errors: 409 `archived` / `no_cli_session`,
+   * 422 `anchor_unresolved`, 500 `rewind_failed` — see the route contract.
+   */
+  rewindSession(
+    id: string,
+    body: { upToSeq: number; dryRun?: boolean },
+  ) {
+    return request<RewindSessionResult>(`/api/sessions/${id}/rewind`, {
+      method: "POST",
+      json: body,
     });
   },
   listGrants(sessionId: string) {

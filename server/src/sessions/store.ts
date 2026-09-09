@@ -188,6 +188,8 @@ export class SessionStore {
     setCliJsonlSeq: Statement | null;
     setAdoptedFromCli: Statement | null;
     findLastEventByKind: Statement | null;
+    findEventBySeq: Statement | null;
+    countUserMessagesUpTo: Statement | null;
     deleteEventsAboveSeq: Statement | null;
     updateEventPayload: Statement | null;
     selectEventKind: Statement | null;
@@ -223,6 +225,8 @@ export class SessionStore {
     setCliJsonlSeq: null,
     setAdoptedFromCli: null,
     findLastEventByKind: null,
+    findEventBySeq: null,
+    countUserMessagesUpTo: null,
     deleteEventsAboveSeq: null,
     updateEventPayload: null,
     selectEventKind: null,
@@ -956,6 +960,45 @@ export class SessionStore {
         }
       | undefined;
     return row ? rowToEvent(row) : null;
+  }
+
+  /**
+   * Fetch a single event by seq. The rewind route uses it to confirm
+   * `upToSeq` actually points at a user_message before aligning against the
+   * CLI JSONL.
+   */
+  findEventBySeq(sessionId: string, seq: number): SessionEvent | null {
+    const row = this.lazyStmt(
+      "findEventBySeq",
+      `SELECT id, session_id, kind, seq, created_at, payload
+         FROM session_events
+         WHERE session_id = ? AND seq = ?`,
+    ).get(sessionId, seq) as
+      | {
+          id: string;
+          session_id: string;
+          kind: string;
+          seq: number;
+          created_at: string;
+          payload: string;
+        }
+      | undefined;
+    return row ? rowToEvent(row) : null;
+  }
+
+  /**
+   * Count user_message events with `seq <= upToSeq` — i.e. the 1-based
+   * ordinal of that message among the session's user messages. The rewind
+   * route uses it to align against the CLI JSONL when resolving a rewind
+   * anchor (cli-rewind.ts).
+   */
+  countUserMessagesUpTo(sessionId: string, upToSeq: number): number {
+    const row = this.lazyStmt(
+      "countUserMessagesUpTo",
+      `SELECT COUNT(*) AS c FROM session_events
+         WHERE session_id = ? AND kind = 'user_message' AND seq <= ?`,
+    ).get(sessionId, upToSeq) as { c: number } | undefined;
+    return row?.c ?? 0;
   }
 
   /**

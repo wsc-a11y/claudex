@@ -1919,6 +1919,7 @@ function Piece({
           onSubmitEdit={onEditLastUserMessage}
           sessionId={session?.id ?? ""}
           seq={p.seq}
+          rewindable={p.seq != null}
           revealed={p.seq != null && revealedSeq === p.seq}
           onToggleReveal={() => {
             if (p.seq != null) onToggleReveal?.(p.seq);
@@ -3248,6 +3249,7 @@ function UserBubble({
   onSubmitEdit,
   sessionId,
   seq,
+  rewindable,
   revealed,
   onToggleReveal,
   onClearReveal,
@@ -3285,6 +3287,10 @@ function UserBubble({
    * collide. */
   sessionId: string;
   seq?: number;
+  /** Arms the "回滚到此" action on this user message's reveal row — rolls
+   * the session's tracked files back to this message (CLI checkpoint
+   * rewind). Only user bubbles carry it. */
+  rewindable?: boolean;
   /** Click/tap-to-reveal flag — when true, the action chips AND the pencil
    * are shown. Desktop and mobile share this trigger; hover does not
    * reveal anything (see MessageActions class list for the rationale). */
@@ -3541,6 +3547,7 @@ function UserBubble({
           sessionId={sessionId}
           seq={seq}
           align="end"
+          rewindable={rewindable}
           revealed={revealed}
           onActionComplete={onClearReveal}
           createdAt={createdAt ?? undefined}

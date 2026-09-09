@@ -1,4 +1,5 @@
 import type { EventEmitter } from "node:events";
+import type { RewindFilesResult } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AskUserQuestionAnnotation,
   AskUserQuestionItem,
@@ -298,6 +299,11 @@ export interface Runner {
   // on the NEXT SDK turn (the SDK's `thinking` option is start-time only,
   // so we can't restyle an in-flight query without tearing it down).
   setEffort(effort: EffortLevel): Promise<void>;
+  // Roll tracked files back to their state at a user message — the CLI's
+  // checkpoint feature, forwarded to the live SDK child. Throws
+  // "runner_not_started" when no SDK handle exists yet (caller falls back
+  // to a resume-based rewind).
+  rewindFiles(userMessageId: string, dryRun?: boolean): Promise<RewindFilesResult>;
   dispose(): Promise<void>;
   on(listener: RunnerListener): () => void;
   // For tests / diagnostics.

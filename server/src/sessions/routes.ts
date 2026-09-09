@@ -8,12 +8,19 @@ import {
   CreateSideSessionRequest,
   EditLastUserMessageRequest,
   ForkSessionRequest,
+  RewindSessionRequest,
+  RewindSessionResult,
   TrustProjectRequest,
   UpdateProjectRequest,
   UpdateSessionRequest,
   clampEffortForModel,
   type ToolGrant,
 } from "@claudex/shared";
+import {
+  locateSessionJsonl,
+  resolveAnchorUuid,
+  rewindViaResume,
+} from "./cli-rewind.js";
 import { ProjectStore } from "./projects.js";
 import { SessionStore } from "./store.js";
 import { ToolGrantStore } from "./grants.js";
@@ -865,6 +872,103 @@ export async function registerSessionRoutes(
       // our findById and the call — treat it as a 404 for symmetry.
       if (!fork) return reply.code(404).send({ error: "not_found" });
       return reply.send({ session: fork });
+    },
+  );
+
+  // POST /api/sessions/:id/rewind
+  //
+  // Roll the session's tracked files back to their state at the user message
+  // with seq `upToSeq`. This is the bundled CLI's own checkpoint feature —
+  // the CLI snapshots files before every write (sessions started with
+  // `enableFileCheckpointing`, i.e. every claudex-run session since this
+  // route landed) and `rewindFiles` restores the backups. claudex only
+  // forwards: resolves the CLI-side anchor UUID for the target message,
+  // then issues the SDK control request either on the session's live runner
+  // or (idle sessions) on a short-lived resumed CLI child.
+  //
+  // Conversation history is deliberately untouched — only files are rolled
+  // back (the CLI transcript keeps the later turns). To restart from a clean
+  // context, fork at the same seq instead.
+  //
+  // Body `{ upToSeq, dryRun? }`:
+  //  - `upToSeq` must point at a `user_message` event (the rewind anchor).
+  //  - `dryRun: true` previews filesChanged/insertions/deletions without
+  //    touching the filesystem.
+  //
+  // Error codes:
+  //   401 — auth gate (via requireAuth)
+  //   404 not_found         — session doesn't exist / has no project
+  //   409 archived          — rewinding a read-only session is misleading
+  //   409 no_cli_session    — session has no SDK conversation yet (never
+  //                           sent a message), so no transcript / checkpoints
+  //   409 transcript_missing— SDK session id set but its JSONL isn't under
+  //                           the CLI projects root
+  //   400 bad_request / not_a_user_message
+  //   422 anchor_unresolved — could not map `upToSeq` to a CLI transcript
+  //                           record (alignment mismatch); try a newer
+  //                           session or re-sync first
+  //   500 rewind_failed     — CLI child errored during the rewind
+  app.post(
+    "/api/sessions/:id/rewind",
+    { preHandler: app.requireAuth as any },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const parsed = RewindSessionRequest.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "bad_request" });
+
+      const session = sessions.findById(id);
+      if (!session) return reply.code(404).send({ error: "not_found" });
+      if (session.status === "archived") {
+        return reply.code(409).send({ error: "archived" });
+      }
+      const sdkId = session.sdkSessionId;
+      if (!sdkId) {
+        return reply.code(409).send({ error: "no_cli_session" });
+      }
+
+      const event = sessions.findEventBySeq(id, parsed.data.upToSeq);
+      if (!event || event.kind !== "user_message") {
+        return reply.code(400).send({ error: "not_a_user_message" });
+      }
+
+      // CLI-side anchor: the transcript UUID of the user record this event
+      // corresponds to. Ordinal alignment against the JSONL — see
+      // cli-rewind.ts for the visibility rules both sides share.
+      const jsonl = await locateSessionJsonl(deps.cliProjectsRoot, sdkId);
+      if (!jsonl) {
+        return reply.code(409).send({ error: "transcript_missing" });
+      }
+      const nth = sessions.countUserMessagesUpTo(id, parsed.data.upToSeq);
+      const anchor = await resolveAnchorUuid(jsonl, nth);
+      if (!anchor) {
+        return reply.code(422).send({ error: "anchor_unresolved" });
+      }
+
+      const project = projects.findById(session.projectId);
+      const cwd = session.worktreePath ?? project?.path;
+      if (!cwd) return reply.code(404).send({ error: "not_found" });
+
+      const dryRun = parsed.data.dryRun;
+      try {
+        // Live runner first (its CLI child owns the session), else resume
+        // the SDK conversation for one control request and tear it down.
+        const result =
+          (await deps.manager.tryRewindViaLiveRunner(id, anchor, dryRun)) ??
+          (await rewindViaResume({
+            cwd,
+            sdkSessionId: sdkId,
+            userMessageId: anchor,
+            dryRun,
+            model: session.model,
+          }));
+        const out = RewindSessionResult.safeParse(result);
+        return reply.send(
+          out.success ? out.data : { canRewind: false, error: "unexpected" },
+        );
+      } catch (err) {
+        app.log.warn({ err, sessionId: id }, "rewind failed");
+        return reply.code(500).send({ error: "rewind_failed" });
+      }
     },
   );
 

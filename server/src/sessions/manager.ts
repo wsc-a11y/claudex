@@ -5,6 +5,7 @@ import type {
   RunnerFactory,
   RunnerInitOptions,
 } from "./runner.js";
+import type { RewindFilesResult } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionStore } from "./store.js";
 import type { ProjectStore } from "./projects.js";
 import { ToolGrantStore, signatureFor } from "./grants.js";
@@ -1480,6 +1481,31 @@ export class SessionManager {
   /** Is a live runner attached for this session? */
   hasRunner(sessionId: string): boolean {
     return this.runners.has(sessionId);
+  }
+
+  /**
+   * Forward a `rewindFiles` control request to the session's live CLI child
+   * when one is attached AND has an SDK handle (i.e. has started at least
+   * once). Returns null when there's no usable live runner — the caller
+   * falls back to a resume-based rewind (see cli-rewind.ts), which is safe
+   * here precisely because a runner with no handle means no CLI process is
+   * touching the session's transcript.
+   */
+  async tryRewindViaLiveRunner(
+    sessionId: string,
+    userMessageId: string,
+    dryRun?: boolean,
+  ): Promise<RewindFilesResult | null> {
+    const entry = this.runners.get(sessionId);
+    if (!entry) return null;
+    try {
+      return await entry.runner.rewindFiles(userMessageId, dryRun);
+    } catch (err) {
+      if (err instanceof Error && err.message === "runner_not_started") {
+        return null;
+      }
+      throw err;
+    }
   }
 
   resolvePermission(

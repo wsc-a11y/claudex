@@ -1810,6 +1810,29 @@ export const ForkSessionRequest = z.object({
 });
 export type ForkSessionRequest = z.infer<typeof ForkSessionRequest>;
 
+// Body of `POST /api/sessions/:id/rewind`. Rolls tracked files back to their
+// state at the user message with this `upToSeq` (the CLI's own checkpoint
+// feature — claudex forwards to the bundled CLI, which maintains the file
+// history under ~/.claude/file-history). `dryRun` previews the changes
+// without touching the filesystem; omit it to execute.
+export const RewindSessionRequest = z.object({
+  upToSeq: z.number().int().nonnegative(),
+  dryRun: z.boolean().optional(),
+});
+export type RewindSessionRequest = z.infer<typeof RewindSessionRequest>;
+
+// Response of `POST /api/sessions/:id/rewind` — mirrors the SDK's
+// RewindFilesResult. `canRewind: false` + `error` explains why (no
+// checkpoints on record, anchor unresolvable, …).
+export const RewindSessionResult = z.object({
+  canRewind: z.boolean(),
+  error: z.string().optional(),
+  filesChanged: z.array(z.string()).optional(),
+  insertions: z.number().optional(),
+  deletions: z.number().optional(),
+});
+export type RewindSessionResult = z.infer<typeof RewindSessionResult>;
+
 // Body of `POST /api/sessions/:id/edit-last-user-message`. Min length 1 so
 // the endpoint refuses empty-string edits — clearing the message isn't a
 // supported flow; the user should archive instead.
