@@ -893,18 +893,20 @@ export const agentRunnerFactory: RunnerFactory = {
 // Helpers
 // -----------------------------------------------------------------------------
 
-// Map our surface permission mode → SDK permission mode.
-// Our "auto" isn't yet supported by the SDK; fall back to default so we still
-// prompt. MVP is expected to run in "default" or "bypassPermissions".
+// Map our surface permission mode → SDK permission mode. Pass-through since
+// SDK 0.2.132 typed `'auto'` (the MVP-era fallback that downgraded auto to
+// "default" was written when the SDK rejected the value — it's been stale
+// since the SDK shipped support). Whether auto actually behaves autonomously
+// is the CLI's call: the permission classifier runs wherever the user points
+// ANTHROPIC_BASE_URL, and claudex just relays the choice + the prompt cards.
 function mapPermissionMode(mode: PermissionMode): NonNullable<Options["permissionMode"]> {
   switch (mode) {
     case "default":
     case "acceptEdits":
     case "plan":
     case "bypassPermissions":
-      return mode;
     case "auto":
-      return "default";
+      return mode;
     default:
       return "default";
   }

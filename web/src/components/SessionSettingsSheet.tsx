@@ -371,7 +371,7 @@ export function SessionSettingsSheet({
     default: "Claude 在每次修改或执行命令前都会询问。",
     acceptEdits: "自动接受文件编辑与安全的文件系统操作。",
     plan: "只读探索。Claude 不会编辑文件。",
-    auto: "自主模式 —— 在服务端分类器上线前,自动模式会回退为询问。",
+    auto: "自主模式 —— 由分类器判断哪些操作需要询问;若当前通道不支持则会退化为询问。",
     bypassPermissions: "不再弹出任何提示。仅在沙箱环境中使用。",
   };
 
