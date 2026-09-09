@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type Database from "better-sqlite3";
 import QRCode from "qrcode";
-import { nanoid } from "nanoid";
 import {
   ChangePasswordRequest,
   LoginRequest,
@@ -80,12 +79,6 @@ function isRequestSecure(req: FastifyRequest): boolean {
   return false;
 }
 
-// 登录设备审计(2026-09):浏览器匿名设备号。非 httpOnly——它是标识不是
-// 凭据,前端无需读取;浏览器对同源登录请求自动携带,前端零改动。
-// 删除/更换 cookie = 新设备,下次登录会以"新设备"醒目记录。
-const DEVICE_COOKIE = "claudex_device_id";
-const DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10; // 10 年
-
 function cookieOpts(req: FastifyRequest) {
   return {
     httpOnly: true,
@@ -97,34 +90,6 @@ function cookieOpts(req: FastifyRequest) {
     secure: isRequestSecure(req),
     path: "/",
   };
-}
-
-function deviceCookieOpts(req: FastifyRequest) {
-  return { ...cookieOpts(req), httpOnly: false, maxAge: DEVICE_COOKIE_MAX_AGE };
-}
-
-function readDeviceId(req: FastifyRequest): string | null {
-  const v = req.cookies?.[DEVICE_COOKIE];
-  return typeof v === "string" && v.length > 0 ? v : null;
-}
-
-// 该 user+device 组合此前是否登录成功过(login 与 recovery_code_used 都是
-// 成功事件——恢复码登录成功的审计事件名是 recovery_code_used 而非 login)。
-// 无历史 = 新设备。
-function deviceIsNew(
-  db: Database.Database,
-  userId: string,
-  deviceId: string | null,
-): boolean {
-  if (!deviceId) return false;
-  const hit = db
-    .prepare(
-      `SELECT 1 FROM audit_events
-       WHERE user_id = ? AND device_id = ? AND event IN ('login','recovery_code_used')
-       LIMIT 1`,
-    )
-    .get(userId, deviceId);
-  return !hit;
 }
 
 export async function registerAuthRoutes(
@@ -154,30 +119,7 @@ export async function registerAuthRoutes(
   // same typed-access pattern duplicated in every routes file.
   const reqCtx = (req: FastifyRequest) => {
     const ctx = getRequestCtx(req);
-    return {
-      ip: ctx.ip,
-      userAgent: ctx.userAgent,
-      port: (req.socket as { remotePort?: number }).remotePort ?? null,
-    };
-  };
-
-  // 登录成功共用:返回本次审计要记录的 deviceId + isNewDevice,并负责首次
-  // 发号。全新 cookie 直接视为新设备(免一次查询);已有 cookie 则查历史。
-  const auditDevice = (
-    req: FastifyRequest,
-    reply: FastifyReply,
-    userId: string,
-  ): { deviceId: string | null; isNewDevice: boolean } => {
-    let deviceId = readDeviceId(req);
-    let isNewDevice = false;
-    if (!deviceId) {
-      deviceId = nanoid(16);
-      isNewDevice = true;
-      reply.setCookie(DEVICE_COOKIE, deviceId, deviceCookieOpts(req));
-    } else {
-      isNewDevice = deviceIsNew(deps.db, userId, deviceId);
-    }
-    return { deviceId, isNewDevice };
+    return { ip: ctx.ip, userAgent: ctx.userAgent };
   };
 
   app.decorate(
@@ -210,7 +152,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         event: "login_rate_limited",
         detail: `ip=${ipKey}`,
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
@@ -234,7 +175,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         event: "login_failed",
         detail: "invalid_credentials",
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       return reply.code(401).send({ error: "invalid_credentials" });
@@ -254,13 +194,10 @@ export async function registerAuthRoutes(
         ...cookieOpts(req),
         maxAge: 60 * 60 * 24 * 30,
       });
-      const dev = auditDevice(req, reply, row.id);
       deps.audit.append({
         userId: row.id,
         event: "login",
         detail: "password only (2FA disabled)",
-        deviceId: dev.deviceId,
-        deviceIsNew: dev.isNewDevice,
         ...reqCtx(req),
       });
       const body: LoginResponse = { requireTotp: false, challengeId: null };
@@ -289,7 +226,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         event: "totp_rate_limited",
         detail: `challenge=${challengeId}`,
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
@@ -318,7 +254,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         userId: row.id,
         event: "totp_failed",
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       return reply.code(401).send({ error: "invalid_totp" });
@@ -333,13 +268,10 @@ export async function registerAuthRoutes(
       maxAge: 60 * 60 * 24 * 30,
     });
     // Audit: successful login lands here; the bcrypt/TOTP pair both cleared.
-    const dev = auditDevice(req, reply, row.id);
     deps.audit.append({
       userId: row.id,
       event: "login",
       detail: "2FA verified",
-      deviceId: dev.deviceId,
-      deviceIsNew: dev.isNewDevice,
       ...reqCtx(req),
     });
     const body: VerifyTotpResponse = { ok: true };
@@ -369,7 +301,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         event: "totp_rate_limited",
         detail: `challenge=${challengeId} (recovery)`,
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
@@ -394,7 +325,6 @@ export async function registerAuthRoutes(
       deps.audit.append({
         userId: row.id,
         event: "recovery_code_failed",
-        deviceId: readDeviceId(req),
         ...reqCtx(req),
       });
       return reply.code(401).send({ error: "invalid_recovery_code" });
@@ -408,13 +338,10 @@ export async function registerAuthRoutes(
       maxAge: 60 * 60 * 24 * 30,
     });
     const remaining = users.countRemainingRecoveryCodes(row.id);
-    const dev = auditDevice(req, reply, row.id);
     deps.audit.append({
       userId: row.id,
       event: "recovery_code_used",
       detail: `remaining=${remaining}`,
-      deviceId: dev.deviceId,
-      deviceIsNew: dev.isNewDevice,
       ...reqCtx(req),
     });
     const body: VerifyRecoveryCodeResponse = { ok: true, remaining };

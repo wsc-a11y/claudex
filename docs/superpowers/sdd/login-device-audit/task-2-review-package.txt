@@ -1,0 +1,147 @@
+=== DIFF: shared/src/models.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-models.ts	2026-09-09 13:50:32.095422900 +0800
++++ shared/src/models.ts	2026-09-09 13:51:11.561054800 +0800
+@@ -1291,6 +1291,12 @@
+   user: z
+     .object({ id: z.string(), username: z.string() })
+     .nullable(),
++  // 登录设备审计(2026-09):deviceId = 浏览器设备号 claudex_device_id;
++  // deviceIsNew = 该设备号对该用户首次登录成功(仅成功事件为 true);
++  // port = TCP 源端口。旧行 deviceId/port 为 null,deviceIsNew 为 false。
++  deviceId: z.string().nullable(),
++  deviceIsNew: z.boolean(),
++  port: z.number().int().nullable(),
+ });
+ export type AuditEvent = z.infer<typeof AuditEvent>;
+ 
+
+=== DIFF: server/src/audit/store.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-store.ts	2026-09-09 13:50:32.114259900 +0800
++++ server/src/audit/store.ts	2026-09-09 13:51:25.663927900 +0800
+@@ -22,6 +22,9 @@
+   ip: string | null;
+   userAgent: string | null;
+   createdAt: string;
++  deviceId: string | null;
++  deviceIsNew: boolean;
++  port: number | null;
+ }
+ 
+ interface DbRow {
+@@ -33,6 +36,9 @@
+   ip: string | null;
+   user_agent: string | null;
+   created_at: string;
++  device_id: string | null;
++  device_is_new: number;
++  port: number | null;
+ }
+ 
+ function toRow(r: DbRow): AuditRow {
+@@ -45,6 +51,9 @@
+     ip: r.ip,
+     userAgent: r.user_agent,
+     createdAt: r.created_at,
++    deviceId: r.device_id,
++    deviceIsNew: r.device_is_new === 1,
++    port: r.port,
+   };
+ }
+ 
+@@ -55,6 +64,9 @@
+   detail?: string | null;
+   ip?: string | null;
+   userAgent?: string | null;
++  deviceId?: string | null;
++  deviceIsNew?: boolean;
++  port?: number | null;
+ }
+ 
+ export interface AuditListOpts {
+@@ -126,13 +138,17 @@
+         detail: clip(input.detail, DETAIL_MAX),
+         ip: clip(input.ip, 64),
+         user_agent: clip(input.userAgent, UA_MAX),
++        device_id: clip(input.deviceId ?? null, 32),
++        device_is_new: input.deviceIsNew ? 1 : 0,
++        port: Number.isInteger(input.port) ? input.port : null,
+         created_at: new Date().toISOString(),
+       };
+       this.lazyStmt(
+         "insert",
+         `INSERT INTO audit_events
+-           (id, user_id, event, target, detail, ip, user_agent, created_at)
+-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++           (id, user_id, event, target, detail, ip, user_agent,
++            device_id, device_is_new, port, created_at)
++         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ).run(
+         row.id,
+         row.user_id,
+@@ -141,6 +157,9 @@
+         row.detail,
+         row.ip,
+         row.user_agent,
++        row.device_id,
++        row.device_is_new,
++        row.port,
+         row.created_at,
+       );
+     } catch (err) {
+
+=== DIFF: server/src/audit/routes.ts ===
+
+=== DIFF: server/src/backup/export.ts ===
+
+=== DIFF: server/tests/auth-device.test.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-auth-device-test.ts	2026-09-09 13:50:32.137069200 +0800
++++ server/tests/auth-device.test.ts	2026-09-09 13:50:57.845853400 +0800
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from "vitest";
+ import { openDb } from "../src/db/index.js";
+ import { tempConfig } from "./helpers.js";
++import { AuditStore } from "../src/audit/store.js";
+ 
+ describe("migration 29 — audit_events device columns", () => {
+   it("adds device_id / device_is_new / port columns", () => {
+@@ -17,6 +18,40 @@
+       dbh.close();
+     } finally {
+       cleanup();
++    }
++  });
++});
++
++describe("AuditStore device fields", () => {
++  it("round-trips device_id / device_is_new / port through append + list", () => {
++    const { config, log, cleanup } = tempConfig();
++    try {
++      const dbh = openDb(config, log);
++      const audit = new AuditStore(dbh.db);
++      audit.append({
++        userId: "u1",
++        event: "login",
++        detail: "2FA verified",
++        ip: "100.64.0.1",
++        userAgent: "curl/8",
++        deviceId: "dev-abc",
++        deviceIsNew: true,
++        port: 54321,
++      });
++      const rows = audit.list({ events: ["login"] });
++      expect(rows[0].deviceId).toBe("dev-abc");
++      expect(rows[0].deviceIsNew).toBe(true);
++      expect(rows[0].port).toBe(54321);
++
++      // 缺省:不传新字段 → 行内 null/false/null(旧调用点不受影响)
++      audit.append({ event: "logout" });
++      const out = audit.list({ events: ["logout"] });
++      expect(out[0].deviceId).toBeNull();
++      expect(out[0].deviceIsNew).toBe(false);
++      expect(out[0].port).toBeNull();
++      dbh.close();
++    } finally {
++      cleanup();
+     }
+   });
+ });

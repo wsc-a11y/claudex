@@ -1,0 +1,48 @@
+--- docs/superpowers/sdd/login-device-audit/snap-auth-device-test.ts	2026-09-09 14:31:58.563754800 +0800
++++ server/tests/auth-device.test.ts	2026-09-09 14:32:58.740269400 +0800
+@@ -181,3 +181,45 @@
+     }
+   });
+ });
++
++describe("GET /api/audit device fields", () => {
++  it("returns deviceId / deviceIsNew / port on login rows", async () => {
++    const { config, log, cleanup } = tempConfig();
++    const dbh = openDb(config, log);
++    const jwtSecret = loadOrCreateJwtSecret(config);
++    const { app } = await buildApp({ db: dbh.db, jwtSecret, logger: false, isProduction: false });
++    try {
++      const users = new UserStore(dbh.db);
++      users.create({
++        username: "no2fa",
++        passwordHash: await hashPassword("pw-pw-pw-pw"),
++        totpSecret: "",
++        totpEnabled: false,
++      });
++      const login = await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
++      });
++      const sessionCookie = login.cookies.find((c) => c.name === "claudex_session")!;
++      const res = await app.inject({
++        method: "GET",
++        url: "/api/audit?events=login",
++        headers: { cookie: `claudex_session=${sessionCookie.value}` },
++      });
++      expect(res.statusCode).toBe(200);
++      const row = res.json().events[0];
++      expect(row.deviceId).toBe(login.cookies.find((c) => c.name === "claudex_device_id")!.value);
++      expect(row.deviceIsNew).toBe(true);
++      // port 来自 req.socket.remotePort,app.inject 的合成 socket 无该字段,
++      // 恒为 null(JSON 序列化后 typeof null === "object");真实落库 =54321
++      // 由 Task 2 的 store 往返用例覆盖。这里只断言字段存在且类型符合契约
++      // (number | null),即非 undefined。
++      expect(row.port === null || typeof row.port === "number").toBe(true);
++    } finally {
++      await app.close();
++      dbh.close();
++      cleanup();
++    }
++  });
++});

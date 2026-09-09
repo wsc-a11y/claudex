@@ -1291,12 +1291,6 @@ export const AuditEvent = z.object({
   user: z
     .object({ id: z.string(), username: z.string() })
     .nullable(),
-  // 登录设备审计(2026-09):deviceId = 浏览器设备号 claudex_device_id;
-  // deviceIsNew = 该设备号对该用户首次登录成功(仅成功事件为 true);
-  // port = TCP 源端口。旧行 deviceId/port 为 null,deviceIsNew 为 false。
-  deviceId: z.string().nullable(),
-  deviceIsNew: z.boolean(),
-  port: z.number().int().nullable(),
 });
 export type AuditEvent = z.infer<typeof AuditEvent>;
 

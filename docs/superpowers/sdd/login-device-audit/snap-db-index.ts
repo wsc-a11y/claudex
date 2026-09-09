@@ -852,19 +852,6 @@ const MIGRATIONS: MigrationEntry[] = [
       ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 1;
     `,
   },
-  {
-    id: 29,
-    name: "audit_events_device_columns",
-    // 登录审计增强(2026-09):device_id = 浏览器设备号 cookie
-    // (claudex_device_id,非 httpOnly 匿名标识),device_is_new = 该设备对
-    // 该用户是否首次登录成功(仅成功事件计算),port = TCP 源端口(配合
-    // 路由器 NAT/DHCP 会话表取证)。旧行三列 NULL/0,不做 backfill。
-    up: `
-      ALTER TABLE audit_events ADD COLUMN device_id TEXT;
-      ALTER TABLE audit_events ADD COLUMN device_is_new INTEGER NOT NULL DEFAULT 0;
-      ALTER TABLE audit_events ADD COLUMN port INTEGER;
-    `,
-  },
 ];
 
 export function openDb(config: Config, log: Logger): ClaudexDb {

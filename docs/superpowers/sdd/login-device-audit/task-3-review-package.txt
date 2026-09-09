@@ -1,0 +1,323 @@
+=== DIFF: server/src/auth/routes.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-auth-routes.ts	2026-09-09 13:54:57.331011300 +0800
++++ server/src/auth/routes.ts	2026-09-09 13:56:51.209853500 +0800
+@@ -1,6 +1,7 @@
+ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+ import type Database from "better-sqlite3";
+ import QRCode from "qrcode";
++import { nanoid } from "nanoid";
+ import {
+   ChangePasswordRequest,
+   LoginRequest,
+@@ -79,6 +80,12 @@
+   return false;
+ }
+ 
++// 登录设备审计(2026-09):浏览器匿名设备号。非 httpOnly——它是标识不是
++// 凭据,前端无需读取;浏览器对同源登录请求自动携带,前端零改动。
++// 删除/更换 cookie = 新设备,下次登录会以"新设备"醒目记录。
++const DEVICE_COOKIE = "claudex_device_id";
++const DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10; // 10 年
++
+ function cookieOpts(req: FastifyRequest) {
+   return {
+     httpOnly: true,
+@@ -92,6 +99,34 @@
+   };
+ }
+ 
++function deviceCookieOpts(req: FastifyRequest) {
++  return { ...cookieOpts(req), httpOnly: false, maxAge: DEVICE_COOKIE_MAX_AGE };
++}
++
++function readDeviceId(req: FastifyRequest): string | null {
++  const v = req.cookies?.[DEVICE_COOKIE];
++  return typeof v === "string" && v.length > 0 ? v : null;
++}
++
++// 该 user+device 组合此前是否登录成功过(login 与 recovery_code_used 都是
++// 成功事件——恢复码登录成功的审计事件名是 recovery_code_used 而非 login)。
++// 无历史 = 新设备。
++function deviceIsNew(
++  db: Database.Database,
++  userId: string,
++  deviceId: string | null,
++): boolean {
++  if (!deviceId) return false;
++  const hit = db
++    .prepare(
++      `SELECT 1 FROM audit_events
++       WHERE user_id = ? AND device_id = ? AND event IN ('login','recovery_code_used')
++       LIMIT 1`,
++    )
++    .get(userId, deviceId);
++  return !hit;
++}
++
+ export async function registerAuthRoutes(
+   app: FastifyInstance,
+   deps: AuthDeps,
+@@ -119,7 +154,30 @@
+   // same typed-access pattern duplicated in every routes file.
+   const reqCtx = (req: FastifyRequest) => {
+     const ctx = getRequestCtx(req);
+-    return { ip: ctx.ip, userAgent: ctx.userAgent };
++    return {
++      ip: ctx.ip,
++      userAgent: ctx.userAgent,
++      port: (req.socket as { remotePort?: number }).remotePort ?? null,
++    };
++  };
++
++  // 登录成功共用:返回本次审计要记录的 deviceId + isNewDevice,并负责首次
++  // 发号。全新 cookie 直接视为新设备(免一次查询);已有 cookie 则查历史。
++  const auditDevice = (
++    req: FastifyRequest,
++    reply: FastifyReply,
++    userId: string,
++  ): { deviceId: string | null; isNewDevice: boolean } => {
++    let deviceId = readDeviceId(req);
++    let isNewDevice = false;
++    if (!deviceId) {
++      deviceId = nanoid(16);
++      isNewDevice = true;
++      reply.setCookie(DEVICE_COOKIE, deviceId, deviceCookieOpts(req));
++    } else {
++      isNewDevice = deviceIsNew(deps.db, userId, deviceId);
++    }
++    return { deviceId, isNewDevice };
+   };
+ 
+   app.decorate(
+@@ -152,6 +210,7 @@
+       deps.audit.append({
+         event: "login_rate_limited",
+         detail: `ip=${ipKey}`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -175,6 +234,7 @@
+       deps.audit.append({
+         event: "login_failed",
+         detail: "invalid_credentials",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_credentials" });
+@@ -194,10 +254,13 @@
+         ...cookieOpts(req),
+         maxAge: 60 * 60 * 24 * 30,
+       });
++      const dev = auditDevice(req, reply, row.id);
+       deps.audit.append({
+         userId: row.id,
+         event: "login",
+         detail: "password only (2FA disabled)",
++        deviceId: dev.deviceId,
++        deviceIsNew: dev.isNewDevice,
+         ...reqCtx(req),
+       });
+       const body: LoginResponse = { requireTotp: false, challengeId: null };
+@@ -226,6 +289,7 @@
+       deps.audit.append({
+         event: "totp_rate_limited",
+         detail: `challenge=${challengeId}`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -254,6 +318,7 @@
+       deps.audit.append({
+         userId: row.id,
+         event: "totp_failed",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_totp" });
+@@ -268,10 +333,13 @@
+       maxAge: 60 * 60 * 24 * 30,
+     });
+     // Audit: successful login lands here; the bcrypt/TOTP pair both cleared.
++    const dev = auditDevice(req, reply, row.id);
+     deps.audit.append({
+       userId: row.id,
+       event: "login",
+       detail: "2FA verified",
++      deviceId: dev.deviceId,
++      deviceIsNew: dev.isNewDevice,
+       ...reqCtx(req),
+     });
+     const body: VerifyTotpResponse = { ok: true };
+@@ -301,6 +369,7 @@
+       deps.audit.append({
+         event: "totp_rate_limited",
+         detail: `challenge=${challengeId} (recovery)`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -325,6 +394,7 @@
+       deps.audit.append({
+         userId: row.id,
+         event: "recovery_code_failed",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_recovery_code" });
+@@ -338,10 +408,13 @@
+       maxAge: 60 * 60 * 24 * 30,
+     });
+     const remaining = users.countRemainingRecoveryCodes(row.id);
++    const dev = auditDevice(req, reply, row.id);
+     deps.audit.append({
+       userId: row.id,
+       event: "recovery_code_used",
+       detail: `remaining=${remaining}`,
++      deviceId: dev.deviceId,
++      deviceIsNew: dev.isNewDevice,
+       ...reqCtx(req),
+     });
+     const body: VerifyRecoveryCodeResponse = { ok: true, remaining };
+
+=== DIFF: server/tests/auth-device.test.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-auth-device-test.ts	2026-09-09 13:54:57.352575000 +0800
++++ server/tests/auth-device.test.ts	2026-09-09 14:02:01.638100600 +0800
+@@ -2,6 +2,12 @@
+ import { openDb } from "../src/db/index.js";
+ import { tempConfig } from "./helpers.js";
+ import { AuditStore } from "../src/audit/store.js";
++import { buildApp } from "../src/transport/app.js";
++import {
++  hashPassword,
++  loadOrCreateJwtSecret,
++  UserStore,
++} from "../src/auth/index.js";
+ 
+ describe("migration 29 — audit_events device columns", () => {
+   it("adds device_id / device_is_new / port columns", () => {
+@@ -54,4 +60,124 @@
+       cleanup();
+     }
+   });
++});
++
++describe("login device audit", () => {
++  async function bootTotpOff() {
++    const { config, log, cleanup } = tempConfig();
++    const dbh = openDb(config, log);
++    const jwtSecret = loadOrCreateJwtSecret(config);
++    const { app } = await buildApp({ db: dbh.db, jwtSecret, logger: false, isProduction: false });
++    const users = new UserStore(dbh.db);
++    users.create({
++      username: "no2fa",
++      passwordHash: await hashPassword("pw-pw-pw-pw"),
++      totpSecret: "", // empty + totpEnabled=false → 2FA 关闭路径
++      totpEnabled: false,
++    });
++    return { app, dbh, cleanup };
++  }
++
++  it("issues claudex_device_id on first successful login and marks it new", async () => {
++    const { app, dbh, cleanup } = await bootTotpOff();
++    try {
++      const res = await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
++      });
++      expect(res.statusCode).toBe(200);
++      const deviceCookie = res.cookies.find((c) => c.name === "claudex_device_id");
++      expect(deviceCookie).toBeDefined();
++      // 设备号 cookie 不是 httpOnly(它是标识不是凭据)。fastify-cookie 对
++      // httpOnly=false 省略该键,故这里断言"非 httpOnly"而非严格 false。
++      expect(deviceCookie!.httpOnly).toBeFalsy();
++
++      const row = dbh.db.prepare(
++        "SELECT device_id, device_is_new, port FROM audit_events WHERE event = 'login'",
++      ).get() as { device_id: string; device_is_new: number; port: number | null };
++      expect(row.device_id).toBe(deviceCookie!.value);
++      expect(row.device_is_new).toBe(1);
++      // port 来自 req.socket.remotePort,app.inject 的合成 socket 无该字段,
++      // 恒为 null;port 值的真实落库已由 Task 2 的 store 往返用例(=54321)覆盖。
++      expect(row).toHaveProperty("port");
++    } finally {
++      await app.close();
++      dbh.close();
++      cleanup();
++    }
++  });
++
++  it("same device again is not new; a different device is new", async () => {
++    const { app, dbh, cleanup } = await bootTotpOff();
++    try {
++      const payload = { username: "no2fa", password: "pw-pw-pw-pw" };
++      const first = await app.inject({ method: "POST", url: "/api/auth/login", payload });
++      const deviceId = first.cookies.find((c) => c.name === "claudex_device_id")!.value;
++
++      const second = await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload,
++        headers: { cookie: `claudex_device_id=${deviceId}` },
++      });
++      expect(second.cookies.some((c) => c.name === "claudex_device_id")).toBe(false);
++
++      const rows = dbh.db.prepare(
++        "SELECT device_id, device_is_new FROM audit_events WHERE event = 'login' ORDER BY rowid",
++      ).all() as Array<{ device_id: string; device_is_new: number }>;
++      expect(rows).toHaveLength(2);
++      expect(rows[0].device_id).toBe(deviceId);
++      expect(rows[0].device_is_new).toBe(1);
++      expect(rows[1].device_id).toBe(deviceId);
++      expect(rows[1].device_is_new).toBe(0);
++
++      const third = await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload,
++        headers: { cookie: "claudex_device_id=other-device" },
++      });
++      const row3 = dbh.db.prepare(
++        "SELECT device_id, device_is_new FROM audit_events WHERE event = 'login' ORDER BY rowid DESC LIMIT 1",
++      ).get() as { device_id: string; device_is_new: number };
++      // 已有 cookie(其他设备号)直接读入,服务端不重复回发 cookie;新设备号
++      // 无历史,故审计行 device_id = 客户端传来的值,且 is_new = 1。
++      expect(row3.device_id).toBe("other-device");
++      expect(row3.device_is_new).toBe(1);
++    } finally {
++      await app.close();
++      dbh.close();
++      cleanup();
++    }
++  });
++
++  it("records device_id and port on failed login when cookie present", async () => {
++    const { app, dbh, cleanup } = await bootTotpOff();
++    try {
++      await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
++      });
++      const bad = await app.inject({
++        method: "POST",
++        url: "/api/auth/login",
++        payload: { username: "no2fa", password: "wrong-pass" },
++        headers: { cookie: "claudex_device_id=attacker-dev" },
++      });
++      expect(bad.statusCode).toBe(401);
++      const row = dbh.db.prepare(
++        "SELECT device_id, device_is_new, port FROM audit_events WHERE event = 'login_failed' ORDER BY rowid DESC LIMIT 1",
++      ).get() as { device_id: string; device_is_new: number; port: number | null };
++      expect(row.device_id).toBe("attacker-dev");
++      expect(row.device_is_new).toBe(0);
++      // port 恒为 null(app.inject 无合成 socket 的 remotePort);值落库见 Task 2。
++      expect(row).toHaveProperty("port");
++    } finally {
++      await app.close();
++      dbh.close();
++      cleanup();
++    }
++  });
+ });

@@ -1680,25 +1680,17 @@ function renderAuditDetail(row: AuditEvent): string {
           lastUsedAt: null,
         })
       : "未知设备";
-  // IP 与源端口拼成 "1.2.3.4:54321";缺 IP 返回 null,由调用方降级文案
-  const addrText = (row: AuditEvent) =>
-    row.ip ? `${row.ip}${row.port != null ? `:${row.port}` : ""}` : null;
   switch (row.event) {
-    case "login": {
-      const parts = [`来自 ${uaLabel(row.userAgent)} 的登录已通过双重验证`];
-      const addr = addrText(row);
-      if (addr) parts.push(`来源 ${addr}`);
-      if (row.deviceIsNew) parts.push("新设备");
-      return parts.join(" · ");
-    }
+    case "login":
+      return `来自 ${uaLabel(row.userAgent)} 的登录已通过双重验证`;
     case "login_failed":
-      return `登录失败尝试,来源 ${addrText(row) ?? "未知 IP"}`;
+      return `登录失败尝试,来源 ${row.ip ?? "未知 IP"}`;
     case "logout":
       return "已退出登录";
     case "password_changed":
       return "密码已修改";
     case "totp_failed":
-      return `双重验证码错误,来源 ${addrText(row) ?? "未知 IP"}`;
+      return `双重验证码错误,来源 ${row.ip ?? "未知 IP"}`;
     case "session_deleted":
       return `已删除会话 "${row.detail ?? "未命名"}"`;
     case "permission_granted":

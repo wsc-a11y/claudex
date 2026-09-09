@@ -1,0 +1,573 @@
+=== 1/7 DIFF db/index.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-db-index.ts	2026-09-09 13:47:18.349644200 +0800
++++ server/src/db/index.ts	2026-09-09 13:49:00.051292000 +0800
+@@ -852,6 +852,19 @@
+       ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 1;
+     `,
+   },
++  {
++    id: 29,
++    name: "audit_events_device_columns",
++    // 登录审计增强(2026-09):device_id = 浏览器设备号 cookie
++    // (claudex_device_id,非 httpOnly 匿名标识),device_is_new = 该设备对
++    // 该用户是否首次登录成功(仅成功事件计算),port = TCP 源端口(配合
++    // 路由器 NAT/DHCP 会话表取证)。旧行三列 NULL/0,不做 backfill。
++    up: `
++      ALTER TABLE audit_events ADD COLUMN device_id TEXT;
++      ALTER TABLE audit_events ADD COLUMN device_is_new INTEGER NOT NULL DEFAULT 0;
++      ALTER TABLE audit_events ADD COLUMN port INTEGER;
++    `,
++  },
+ ];
+ 
+ export function openDb(config: Config, log: Logger): ClaudexDb {
+
+=== 2/7 DIFF auth/routes.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-auth-routes.ts	2026-09-09 13:54:57.331011300 +0800
++++ server/src/auth/routes.ts	2026-09-09 13:56:51.209853500 +0800
+@@ -1,6 +1,7 @@
+ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+ import type Database from "better-sqlite3";
+ import QRCode from "qrcode";
++import { nanoid } from "nanoid";
+ import {
+   ChangePasswordRequest,
+   LoginRequest,
+@@ -79,6 +80,12 @@
+   return false;
+ }
+ 
++// 登录设备审计(2026-09):浏览器匿名设备号。非 httpOnly——它是标识不是
++// 凭据,前端无需读取;浏览器对同源登录请求自动携带,前端零改动。
++// 删除/更换 cookie = 新设备,下次登录会以"新设备"醒目记录。
++const DEVICE_COOKIE = "claudex_device_id";
++const DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10; // 10 年
++
+ function cookieOpts(req: FastifyRequest) {
+   return {
+     httpOnly: true,
+@@ -92,6 +99,34 @@
+   };
+ }
+ 
++function deviceCookieOpts(req: FastifyRequest) {
++  return { ...cookieOpts(req), httpOnly: false, maxAge: DEVICE_COOKIE_MAX_AGE };
++}
++
++function readDeviceId(req: FastifyRequest): string | null {
++  const v = req.cookies?.[DEVICE_COOKIE];
++  return typeof v === "string" && v.length > 0 ? v : null;
++}
++
++// 该 user+device 组合此前是否登录成功过(login 与 recovery_code_used 都是
++// 成功事件——恢复码登录成功的审计事件名是 recovery_code_used 而非 login)。
++// 无历史 = 新设备。
++function deviceIsNew(
++  db: Database.Database,
++  userId: string,
++  deviceId: string | null,
++): boolean {
++  if (!deviceId) return false;
++  const hit = db
++    .prepare(
++      `SELECT 1 FROM audit_events
++       WHERE user_id = ? AND device_id = ? AND event IN ('login','recovery_code_used')
++       LIMIT 1`,
++    )
++    .get(userId, deviceId);
++  return !hit;
++}
++
+ export async function registerAuthRoutes(
+   app: FastifyInstance,
+   deps: AuthDeps,
+@@ -119,7 +154,30 @@
+   // same typed-access pattern duplicated in every routes file.
+   const reqCtx = (req: FastifyRequest) => {
+     const ctx = getRequestCtx(req);
+-    return { ip: ctx.ip, userAgent: ctx.userAgent };
++    return {
++      ip: ctx.ip,
++      userAgent: ctx.userAgent,
++      port: (req.socket as { remotePort?: number }).remotePort ?? null,
++    };
++  };
++
++  // 登录成功共用:返回本次审计要记录的 deviceId + isNewDevice,并负责首次
++  // 发号。全新 cookie 直接视为新设备(免一次查询);已有 cookie 则查历史。
++  const auditDevice = (
++    req: FastifyRequest,
++    reply: FastifyReply,
++    userId: string,
++  ): { deviceId: string | null; isNewDevice: boolean } => {
++    let deviceId = readDeviceId(req);
++    let isNewDevice = false;
++    if (!deviceId) {
++      deviceId = nanoid(16);
++      isNewDevice = true;
++      reply.setCookie(DEVICE_COOKIE, deviceId, deviceCookieOpts(req));
++    } else {
++      isNewDevice = deviceIsNew(deps.db, userId, deviceId);
++    }
++    return { deviceId, isNewDevice };
+   };
+ 
+   app.decorate(
+@@ -152,6 +210,7 @@
+       deps.audit.append({
+         event: "login_rate_limited",
+         detail: `ip=${ipKey}`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -175,6 +234,7 @@
+       deps.audit.append({
+         event: "login_failed",
+         detail: "invalid_credentials",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_credentials" });
+@@ -194,10 +254,13 @@
+         ...cookieOpts(req),
+         maxAge: 60 * 60 * 24 * 30,
+       });
++      const dev = auditDevice(req, reply, row.id);
+       deps.audit.append({
+         userId: row.id,
+         event: "login",
+         detail: "password only (2FA disabled)",
++        deviceId: dev.deviceId,
++        deviceIsNew: dev.isNewDevice,
+         ...reqCtx(req),
+       });
+       const body: LoginResponse = { requireTotp: false, challengeId: null };
+@@ -226,6 +289,7 @@
+       deps.audit.append({
+         event: "totp_rate_limited",
+         detail: `challenge=${challengeId}`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -254,6 +318,7 @@
+       deps.audit.append({
+         userId: row.id,
+         event: "totp_failed",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_totp" });
+@@ -268,10 +333,13 @@
+       maxAge: 60 * 60 * 24 * 30,
+     });
+     // Audit: successful login lands here; the bcrypt/TOTP pair both cleared.
++    const dev = auditDevice(req, reply, row.id);
+     deps.audit.append({
+       userId: row.id,
+       event: "login",
+       detail: "2FA verified",
++      deviceId: dev.deviceId,
++      deviceIsNew: dev.isNewDevice,
+       ...reqCtx(req),
+     });
+     const body: VerifyTotpResponse = { ok: true };
+@@ -301,6 +369,7 @@
+       deps.audit.append({
+         event: "totp_rate_limited",
+         detail: `challenge=${challengeId} (recovery)`,
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       reply.header("Retry-After", String(gate.retryAfterSec ?? 1));
+@@ -325,6 +394,7 @@
+       deps.audit.append({
+         userId: row.id,
+         event: "recovery_code_failed",
++        deviceId: readDeviceId(req),
+         ...reqCtx(req),
+       });
+       return reply.code(401).send({ error: "invalid_recovery_code" });
+@@ -338,10 +408,13 @@
+       maxAge: 60 * 60 * 24 * 30,
+     });
+     const remaining = users.countRemainingRecoveryCodes(row.id);
++    const dev = auditDevice(req, reply, row.id);
+     deps.audit.append({
+       userId: row.id,
+       event: "recovery_code_used",
+       detail: `remaining=${remaining}`,
++      deviceId: dev.deviceId,
++      deviceIsNew: dev.isNewDevice,
+       ...reqCtx(req),
+     });
+     const body: VerifyRecoveryCodeResponse = { ok: true, remaining };
+
+=== 3/7 DIFF shared/models.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-models.ts	2026-09-09 13:50:32.095422900 +0800
++++ shared/src/models.ts	2026-09-09 13:51:11.561054800 +0800
+@@ -1291,6 +1291,12 @@
+   user: z
+     .object({ id: z.string(), username: z.string() })
+     .nullable(),
++  // 登录设备审计(2026-09):deviceId = 浏览器设备号 claudex_device_id;
++  // deviceIsNew = 该设备号对该用户首次登录成功(仅成功事件为 true);
++  // port = TCP 源端口。旧行 deviceId/port 为 null,deviceIsNew 为 false。
++  deviceId: z.string().nullable(),
++  deviceIsNew: z.boolean(),
++  port: z.number().int().nullable(),
+ });
+ export type AuditEvent = z.infer<typeof AuditEvent>;
+ 
+
+=== 4/7 DIFF audit/store.ts ===
+--- docs/superpowers/sdd/login-device-audit/snap-store.ts	2026-09-09 13:50:32.114259900 +0800
++++ server/src/audit/store.ts	2026-09-09 13:51:25.663927900 +0800
+@@ -22,6 +22,9 @@
+   ip: string | null;
+   userAgent: string | null;
+   createdAt: string;
++  deviceId: string | null;
++  deviceIsNew: boolean;
++  port: number | null;
+ }
+ 
+ interface DbRow {
+@@ -33,6 +36,9 @@
+   ip: string | null;
+   user_agent: string | null;
+   created_at: string;
++  device_id: string | null;
++  device_is_new: number;
++  port: number | null;
+ }
+ 
+ function toRow(r: DbRow): AuditRow {
+@@ -45,6 +51,9 @@
+     ip: r.ip,
+     userAgent: r.user_agent,
+     createdAt: r.created_at,
++    deviceId: r.device_id,
++    deviceIsNew: r.device_is_new === 1,
++    port: r.port,
+   };
+ }
+ 
+@@ -55,6 +64,9 @@
+   detail?: string | null;
+   ip?: string | null;
+   userAgent?: string | null;
++  deviceId?: string | null;
++  deviceIsNew?: boolean;
++  port?: number | null;
+ }
+ 
+ export interface AuditListOpts {
+@@ -126,13 +138,17 @@
+         detail: clip(input.detail, DETAIL_MAX),
+         ip: clip(input.ip, 64),
+         user_agent: clip(input.userAgent, UA_MAX),
++        device_id: clip(input.deviceId ?? null, 32),
++        device_is_new: input.deviceIsNew ? 1 : 0,
++        port: Number.isInteger(input.port) ? input.port : null,
+         created_at: new Date().toISOString(),
+       };
+       this.lazyStmt(
+         "insert",
+         `INSERT INTO audit_events
+-           (id, user_id, event, target, detail, ip, user_agent, created_at)
+-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++           (id, user_id, event, target, detail, ip, user_agent,
++            device_id, device_is_new, port, created_at)
++         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ).run(
+         row.id,
+         row.user_id,
+@@ -141,6 +157,9 @@
+         row.detail,
+         row.ip,
+         row.user_agent,
++        row.device_id,
++        row.device_is_new,
++        row.port,
+         row.created_at,
+       );
+     } catch (err) {
+
+=== 5/7 DIFF Settings.tsx ===
+--- docs/superpowers/sdd/login-device-audit/snap-settings.tsx	2026-09-09 14:34:18.766032600 +0800
++++ web/src/screens/Settings.tsx	2026-09-09 14:34:39.587525000 +0800
+@@ -1680,17 +1680,25 @@
+           lastUsedAt: null,
+         })
+       : "未知设备";
++  // IP 与源端口拼成 "1.2.3.4:54321";缺 IP 返回 null,由调用方降级文案
++  const addrText = (row: AuditEvent) =>
++    row.ip ? `${row.ip}${row.port != null ? `:${row.port}` : ""}` : null;
+   switch (row.event) {
+-    case "login":
+-      return `来自 ${uaLabel(row.userAgent)} 的登录已通过双重验证`;
++    case "login": {
++      const parts = [`来自 ${uaLabel(row.userAgent)} 的登录已通过双重验证`];
++      const addr = addrText(row);
++      if (addr) parts.push(`来源 ${addr}`);
++      if (row.deviceIsNew) parts.push("新设备");
++      return parts.join(" · ");
++    }
+     case "login_failed":
+-      return `登录失败尝试,来源 ${row.ip ?? "未知 IP"}`;
++      return `登录失败尝试,来源 ${addrText(row) ?? "未知 IP"}`;
+     case "logout":
+       return "已退出登录";
+     case "password_changed":
+       return "密码已修改";
+     case "totp_failed":
+-      return `双重验证码错误,来源 ${row.ip ?? "未知 IP"}`;
++      return `双重验证码错误,来源 ${addrText(row) ?? "未知 IP"}`;
+     case "session_deleted":
+       return `已删除会话 "${row.detail ?? "未命名"}"`;
+     case "permission_granted":
+
+=== 6/7 DIFF FEATURES.md ===
+--- docs/superpowers/sdd/login-device-audit/snap-features.md	2026-09-09 14:35:39.700921400 +0800
++++ docs/FEATURES.md	2026-09-09 14:37:10.141744600 +0800
+@@ -351,7 +351,7 @@
+ | ✅ | `/settings` route wrapped in AppShell (260px global sidebar). Rebuilt to match mockup s-12: screen header (caps "Settings" + display `{activeTab}` + mobile back chevron to `/sessions`), profile card (avatar = first char of username, username, "self-hosted" tagline, permanent "2FA on" pill), then an **inner 240px left rail** on md+ with eight entries (Account / Security / Notifications / Appearance / MCP servers / Plugins / Environment / Advanced; active row = `bg-canvas border border-line shadow-card`), and a horizontal filter-chip row on mobile. Content area uses the mockup's caps + display + lede header pattern on every subtab. Selected tab persists in `?tab=security` via `useSearchParams` so refresh/back-forward preserve state; Account is the default and clears the query string | `web/src/screens/Settings.tsx`, `web/src/components/AppShell.tsx` |
+ | ✅ | **Account** tab — real data. Rows: username, createdAt, 2FA-enabled badge, plus a "Change password" button that opens a modal. Modal enforces current password, new-password ≥ 8, and non-identity; surfaces server error codes (`invalid_credentials`, `same_password`, `bad_request`) in human words. On success shows a "password updated — other tabs keep working until cookie exp" note | `web/src/screens/Settings.tsx` (`AccountPanel`, `ChangePasswordModal`) |
+ | ✅ | **Security** tab — real data, honest. Three cards: the **2FA card** (klein-wash icon tile + status pill with full state machine — Enable / Rebind / Disable buttons; Enable opens a modal that pulls a fresh `secret + qrSvg` from `POST /api/auth/totp/begin` and confirms via `POST /api/auth/totp/confirm` with the new pairing code + current password; Rebind uses the same modal but gates on a code from the **current** authenticator instead of password; Disable opens a separate modal that wipes secret + every recovery code via `POST /api/auth/totp/disable`, password-gated), the **Recovery codes** card (only rendered when 2FA is on; shows `{remaining} of 10 unused` + relative `generated` timestamp, two-click-armed Regenerate that opens a one-time modal with the 10 plaintext codes + Copy all + Download as .txt; warning pill when `remaining === 0`), and an **Audit log** card backed by `GET /api/audit`. Audit card shows `{totalCount} events · past 30 days` and up to 6 rows inline with 12-char relative-time column (`5m`, `2h`, `3d`, `1w`) + human sentence per event kind; "Open full log" expands and paginates via a `before=<iso>` cursor — 50 rows per page, "Show more" appends the next page and disables when `rows.length >= totalCount` or a short page arrives, so the card can reach past the legacy 200-row ceiling. Server writes fire-and-forget from auth (`login` / `login_failed` / `totp_failed` / `totp_enabled` / `totp_rebound` / `totp_disabled` / `totp_enable_failed` / `totp_rebind_failed` / `totp_disable_failed` / `logout` / `password_changed` / `recovery_codes_regenerated` / `recovery_code_used` / `recovery_code_failed`), session delete (`session_deleted`), manager permission decisions (`permission_granted` / `permission_denied`), and push routes (`push_subscribed` / `push_revoked`). Still intentionally omitted: Last-used tile, Paired browsers card, Exposure panel | same (`SecurityPanel`, `TwoFactorCard`, `TwoFactorEnrollModal`, `TwoFactorDisableModal`, `RecoveryCodesCard`, `AuditLogCard`), `server/src/audit/store.ts`, `server/src/audit/routes.ts`, `server/src/auth/recovery-codes.ts` |
+-| ✅ | `audit_events` table — SQLite migration id=8 creates `audit_events(id, user_id NULL, event, target NULL, detail NULL, ip NULL, user_agent NULL, created_at)` with indexes on `created_at DESC` (powers the Security card's "past 30 days" query) and `event`. `event` is a short free-form identifier rather than an enum column so new audit kinds can land without a migration; `user_id` has no FK so rows survive credential rotations and pre-login events (failed logins, TOTP failures without a valid challenge) can still be recorded with `user_id = NULL`. `ip` / `user_agent` are best-effort and may be NULL when the call site can't thread a request through (e.g. manager permission decisions) | `server/src/db/index.ts` (migration 8), `server/src/audit/store.ts`, `server/src/audit/routes.ts` |
++| ✅ | `audit_events` table — SQLite migration id=8 creates `audit_events(id, user_id NULL, event, target NULL, detail NULL, ip NULL, user_agent NULL, created_at)` with indexes on `created_at DESC` (powers the Security card's "past 30 days" query) and `event`. `event` is a short free-form identifier rather than an enum column so new audit kinds can land without a migration; `user_id` has no FK so rows survive credential rotations and pre-login events (failed logins, TOTP failures without a valid challenge) can still be recorded with `user_id = NULL`. `ip` / `user_agent` are best-effort and may be NULL when the call site can't thread a request through (e.g. manager permission decisions). **Login device audit**: `audit_events` gained `device_id` (from the `claudex_device_id` cookie) / `device_is_new` (marker for a device's first successful login) / `port` (source port) columns. A successful login signs a device number (`claudex_device_id`) when none is present and flags it as a new device; failed-login and rate-limit events carry `device_id` too. The Audit log sentence renders `IP:port` alongside a new-device marker | `server/src/db/index.ts` (migration 8, plus login-device-audit migration), `server/src/audit/store.ts`, `server/src/audit/routes.ts` |
+ | ✅ | **Notifications** tab — empty state only ("No notifications stream yet.") with a "not tracked yet" pill. Will light up once permission queues, routine outcomes, and pairing alerts have a notification channel to flow through | same (`NotificationsPanel`) |
+ | ✅ | **Appearance** tab — partly real. Theme row with the current "Light" segment active and a dimmed "Dark (soon)" placeholder; disabled text-size slider with an explanatory note. **Output-language picker**: 8 options (Auto + Chinese / English / Japanese / Korean / Spanish / French / German). Auto defers to the user's own `~/.claude/settings.json` `language` field; picking a specific language appends "Please respond in <lang>." to the Claude Code system preset on every NEW/resumed session's SDK start. Live sessions keep their current language until next resume. State lives in claudex's own SQLite (`app_settings` KV table, migration 24) — never writes to `~/.claude/`. Backed by `GET`/`PATCH /api/app-settings` | same (`AppearancePanel`), `server/src/settings/store.ts`, `server/src/settings/routes.ts`, `server/src/sessions/agent-runner.ts`, `shared/src/models.ts` (`AppSettings`, `SUPPORTED_LANGUAGES`) |
+ | ✅ | **Models** tab — add custom model IDs from self-hosted API proxies (OneAPI, New API, etc.) alongside the built-in Claude models. Custom models are persisted in the `app_settings` KV table as a JSON array under `custom_models`. Each entry has `id` (the model string passed verbatim to the Agent SDK), `label` (human-readable display name), and optional `contextWindow` (token count for the context-percentage ring; defaults to 1M). The tab shows built-in models (read-only) and custom models (add/edit/delete). All model selectors throughout the app (Chat header pill, New Session sheet, Session Settings, Queue, Routines) merge built-in + custom models dynamically | same (`ModelsPanel`), `shared/src/models.ts` (`ModelId`, `BUILTIN_MODELS`, `CustomModel`, `AppSettings`), `server/src/settings/store.ts`, `web/src/lib/pricing.ts` (`getModelLabel`, `getAllModelEntries`), `web/src/state/app-settings.ts` |
+
+=== 7/7 NEW FILE tests/auth-device.test.ts (全文) ===
+import { describe, it, expect } from "vitest";
+import { openDb } from "../src/db/index.js";
+import { tempConfig } from "./helpers.js";
+import { AuditStore } from "../src/audit/store.js";
+import { buildApp } from "../src/transport/app.js";
+import {
+  hashPassword,
+  loadOrCreateJwtSecret,
+  UserStore,
+} from "../src/auth/index.js";
+
+describe("migration 29 — audit_events device columns", () => {
+  it("adds device_id / device_is_new / port columns", () => {
+    const { config, log, cleanup } = tempConfig();
+    try {
+      const dbh = openDb(config, log);
+      const cols = dbh.db
+        .prepare("PRAGMA table_info(audit_events)")
+        .all() as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      expect(names.has("device_id")).toBe(true);
+      expect(names.has("device_is_new")).toBe(true);
+      expect(names.has("port")).toBe(true);
+      dbh.close();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("AuditStore device fields", () => {
+  it("round-trips device_id / device_is_new / port through append + list", () => {
+    const { config, log, cleanup } = tempConfig();
+    try {
+      const dbh = openDb(config, log);
+      const audit = new AuditStore(dbh.db);
+      audit.append({
+        userId: "u1",
+        event: "login",
+        detail: "2FA verified",
+        ip: "100.64.0.1",
+        userAgent: "curl/8",
+        deviceId: "dev-abc",
+        deviceIsNew: true,
+        port: 54321,
+      });
+      const rows = audit.list({ events: ["login"] });
+      expect(rows[0].deviceId).toBe("dev-abc");
+      expect(rows[0].deviceIsNew).toBe(true);
+      expect(rows[0].port).toBe(54321);
+
+      // 缺省:不传新字段 → 行内 null/false/null(旧调用点不受影响)
+      audit.append({ event: "logout" });
+      const out = audit.list({ events: ["logout"] });
+      expect(out[0].deviceId).toBeNull();
+      expect(out[0].deviceIsNew).toBe(false);
+      expect(out[0].port).toBeNull();
+      dbh.close();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("login device audit", () => {
+  async function bootTotpOff() {
+    const { config, log, cleanup } = tempConfig();
+    const dbh = openDb(config, log);
+    const jwtSecret = loadOrCreateJwtSecret(config);
+    const { app } = await buildApp({ db: dbh.db, jwtSecret, logger: false, isProduction: false });
+    const users = new UserStore(dbh.db);
+    users.create({
+      username: "no2fa",
+      passwordHash: await hashPassword("pw-pw-pw-pw"),
+      totpSecret: "", // empty + totpEnabled=false → 2FA 关闭路径
+      totpEnabled: false,
+    });
+    return { app, dbh, cleanup };
+  }
+
+  it("issues claudex_device_id on first successful login and marks it new", async () => {
+    const { app, dbh, cleanup } = await bootTotpOff();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
+      });
+      expect(res.statusCode).toBe(200);
+      const deviceCookie = res.cookies.find((c) => c.name === "claudex_device_id");
+      expect(deviceCookie).toBeDefined();
+      // 设备号 cookie 不是 httpOnly(它是标识不是凭据)。fastify-cookie 对
+      // httpOnly=false 省略该键,故这里断言"非 httpOnly"而非严格 false。
+      expect(deviceCookie!.httpOnly).toBeFalsy();
+
+      const row = dbh.db.prepare(
+        "SELECT device_id, device_is_new, port FROM audit_events WHERE event = 'login'",
+      ).get() as { device_id: string; device_is_new: number; port: number | null };
+      expect(row.device_id).toBe(deviceCookie!.value);
+      expect(row.device_is_new).toBe(1);
+      // port 来自 req.socket.remotePort,app.inject 的合成 socket 无该字段,
+      // 恒为 null;port 值的真实落库已由 Task 2 的 store 往返用例(=54321)覆盖。
+      expect(row).toHaveProperty("port");
+    } finally {
+      await app.close();
+      dbh.close();
+      cleanup();
+    }
+  });
+
+  it("same device again is not new; a different device is new", async () => {
+    const { app, dbh, cleanup } = await bootTotpOff();
+    try {
+      const payload = { username: "no2fa", password: "pw-pw-pw-pw" };
+      const first = await app.inject({ method: "POST", url: "/api/auth/login", payload });
+      const deviceId = first.cookies.find((c) => c.name === "claudex_device_id")!.value;
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload,
+        headers: { cookie: `claudex_device_id=${deviceId}` },
+      });
+      expect(second.cookies.some((c) => c.name === "claudex_device_id")).toBe(false);
+
+      const rows = dbh.db.prepare(
+        "SELECT device_id, device_is_new FROM audit_events WHERE event = 'login' ORDER BY rowid",
+      ).all() as Array<{ device_id: string; device_is_new: number }>;
+      expect(rows).toHaveLength(2);
+      expect(rows[0].device_id).toBe(deviceId);
+      expect(rows[0].device_is_new).toBe(1);
+      expect(rows[1].device_id).toBe(deviceId);
+      expect(rows[1].device_is_new).toBe(0);
+
+      const third = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload,
+        headers: { cookie: "claudex_device_id=other-device" },
+      });
+      const row3 = dbh.db.prepare(
+        "SELECT device_id, device_is_new FROM audit_events WHERE event = 'login' ORDER BY rowid DESC LIMIT 1",
+      ).get() as { device_id: string; device_is_new: number };
+      // 已有 cookie(其他设备号)直接读入,服务端不重复回发 cookie;新设备号
+      // 无历史,故审计行 device_id = 客户端传来的值,且 is_new = 1。
+      expect(row3.device_id).toBe("other-device");
+      expect(row3.device_is_new).toBe(1);
+    } finally {
+      await app.close();
+      dbh.close();
+      cleanup();
+    }
+  });
+
+  it("records device_id and port on failed login when cookie present", async () => {
+    const { app, dbh, cleanup } = await bootTotpOff();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
+      });
+      const bad = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: "no2fa", password: "wrong-pass" },
+        headers: { cookie: "claudex_device_id=attacker-dev" },
+      });
+      expect(bad.statusCode).toBe(401);
+      const row = dbh.db.prepare(
+        "SELECT device_id, device_is_new, port FROM audit_events WHERE event = 'login_failed' ORDER BY rowid DESC LIMIT 1",
+      ).get() as { device_id: string; device_is_new: number; port: number | null };
+      expect(row.device_id).toBe("attacker-dev");
+      expect(row.device_is_new).toBe(0);
+      // port 恒为 null(app.inject 无合成 socket 的 remotePort);值落库见 Task 2。
+      expect(row).toHaveProperty("port");
+    } finally {
+      await app.close();
+      dbh.close();
+      cleanup();
+    }
+  });
+});
+
+describe("GET /api/audit device fields", () => {
+  it("returns deviceId / deviceIsNew / port on login rows", async () => {
+    const { config, log, cleanup } = tempConfig();
+    const dbh = openDb(config, log);
+    const jwtSecret = loadOrCreateJwtSecret(config);
+    const { app } = await buildApp({ db: dbh.db, jwtSecret, logger: false, isProduction: false });
+    try {
+      const users = new UserStore(dbh.db);
+      users.create({
+        username: "no2fa",
+        passwordHash: await hashPassword("pw-pw-pw-pw"),
+        totpSecret: "",
+        totpEnabled: false,
+      });
+      const login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: "no2fa", password: "pw-pw-pw-pw" },
+      });
+      const sessionCookie = login.cookies.find((c) => c.name === "claudex_session")!;
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/audit?events=login",
+        headers: { cookie: `claudex_session=${sessionCookie.value}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const row = res.json().events[0];
+      expect(row.deviceId).toBe(login.cookies.find((c) => c.name === "claudex_device_id")!.value);
+      expect(row.deviceIsNew).toBe(true);
+      // port 来自 req.socket.remotePort,app.inject 的合成 socket 无该字段,
+      // 恒为 null(JSON 序列化后 typeof null === "object");真实落库 =54321
+      // 由 Task 2 的 store 往返用例覆盖。这里只断言字段存在且类型符合契约
+      // (number | null),即非 undefined。
+      expect(row.port === null || typeof row.port === "number").toBe(true);
+    } finally {
+      await app.close();
+      dbh.close();
+      cleanup();
+    }
+  });
+});
+
+=== 附注 ===
+audit/routes.ts 与 backup/export.ts 的改动(Task2 超范围透传)已在 task-2-review-package.txt 中审查通过,无后续改动。

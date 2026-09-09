@@ -22,9 +22,6 @@ export interface AuditRow {
   ip: string | null;
   userAgent: string | null;
   createdAt: string;
-  deviceId: string | null;
-  deviceIsNew: boolean;
-  port: number | null;
 }
 
 interface DbRow {
@@ -36,9 +33,6 @@ interface DbRow {
   ip: string | null;
   user_agent: string | null;
   created_at: string;
-  device_id: string | null;
-  device_is_new: number;
-  port: number | null;
 }
 
 function toRow(r: DbRow): AuditRow {
@@ -51,9 +45,6 @@ function toRow(r: DbRow): AuditRow {
     ip: r.ip,
     userAgent: r.user_agent,
     createdAt: r.created_at,
-    deviceId: r.device_id,
-    deviceIsNew: r.device_is_new === 1,
-    port: r.port,
   };
 }
 
@@ -64,9 +55,6 @@ export interface AuditAppendInput {
   detail?: string | null;
   ip?: string | null;
   userAgent?: string | null;
-  deviceId?: string | null;
-  deviceIsNew?: boolean;
-  port?: number | null;
 }
 
 export interface AuditListOpts {
@@ -138,17 +126,13 @@ export class AuditStore {
         detail: clip(input.detail, DETAIL_MAX),
         ip: clip(input.ip, 64),
         user_agent: clip(input.userAgent, UA_MAX),
-        device_id: clip(input.deviceId ?? null, 32),
-        device_is_new: input.deviceIsNew ? 1 : 0,
-        port: Number.isInteger(input.port) ? input.port : null,
         created_at: new Date().toISOString(),
       };
       this.lazyStmt(
         "insert",
         `INSERT INTO audit_events
-           (id, user_id, event, target, detail, ip, user_agent,
-            device_id, device_is_new, port, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, user_id, event, target, detail, ip, user_agent, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         row.id,
         row.user_id,
@@ -157,9 +141,6 @@ export class AuditStore {
         row.detail,
         row.ip,
         row.user_agent,
-        row.device_id,
-        row.device_is_new,
-        row.port,
         row.created_at,
       );
     } catch (err) {

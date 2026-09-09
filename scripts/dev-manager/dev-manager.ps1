@@ -23,8 +23,12 @@ $ErrorActionPreference = 'Stop'
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Ports = 5179   # 正式版只监听这一个端口
 $script:RootPid = $null
+# 日志一律进 ~/.claudex/logs/(与 server.log 同处),不污染 %TEMP%
+$script:LogDir  = Join-Path $HOME '.claudex\logs'
 # pnpm serve 的输出(含打包阶段)重定向到这里,启动失败时排查用
-$script:ServeLog = Join-Path $env:TEMP 'claudex-serve.log'
+$script:ServeLog = Join-Path $script:LogDir 'serve.log'
+# dev-manager 自身的退出审计日志(见 Write-ExitLog)
+$script:ManagerLog = Join-Path $script:LogDir 'dev-manager.log'
 
 # ---------- 核心:状态与启停(CLI 与 GUI 共用) ----------
 
@@ -55,6 +59,8 @@ function Start-ClaudexDev {
   # 源码有更新 → pnpm serve 先打包再启动(build 失败不会起 server,
   # 日志能看出中断原因)。打包失败会 exit 非 0,cmd 退出、端口保持空,
   # 上层 WatchStartup 超时后提示去看 ServeLog。
+  # 日志目录必须存在,否则 cmd 的重定向会失败、命令根本不执行。
+  New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
   $needsBuild = Test-NeedsBuild
   $cmd = if ($needsBuild) {
     "pnpm serve > `"$script:ServeLog`" 2>&1"
@@ -248,7 +254,7 @@ function New-Btn {
 
 function Write-ExitLog {
   param([string]$msg)
-  Add-Content -Path (Join-Path $env:TEMP 'claudex-dev-manager.log') -Value $msg
+  Add-Content -Path $script:ManagerLog -Value $msg
 }
 
 function Exit-Manager {
