@@ -7,6 +7,7 @@ import {
   Code,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
   File as FileIcon,
@@ -96,6 +97,44 @@ function rawUrl(absPath: string, download = false): string {
   const qs = new URLSearchParams({ path: absPath });
   if (download) qs.set("download", "1");
   return `/api/browse/raw?${qs.toString()}`;
+}
+
+/**
+ * URL of the standalone 文件站 (`web/files.html`) seen from inside the main
+ * app. Built app: the claudex server hosts both HTML entries same-origin, so
+ * it's just `/files.html`. Dev: the main vite instance runs on 5173 while the
+ * file station gets its own instance on 5174 — the mirror of `mainSiteHref()`
+ * in files-main.tsx (which maps 5174 → 5173 the other way).
+ */
+function fileStationHref(): string {
+  if (typeof window !== "undefined" && window.location.port === "5173") {
+    return `${window.location.protocol}//${window.location.hostname}:5174/`;
+  }
+  return "/files.html";
+}
+
+/**
+ * Corner link from the main-site Files tab to the standalone 文件站 — the
+ * reverse of the "主站" link files-main.tsx renders in the file station's
+ * top bar. Opens a new tab: the file station is a separate HTML entry with
+ * no claudex chrome (full-screen read-only browsing + a shareable URL), so
+ * it should keep its own history stack and let the main app stay put behind
+ * it. Rendered only in embedded (non-standalone) mode — the file station
+ * itself must not link to itself.
+ */
+function FileStationLink() {
+  return (
+    <a
+      href={fileStationHref()}
+      target="_blank"
+      rel="noreferrer"
+      title="在新标签页打开独立文件站(无侧栏的全屏文件浏览器)"
+      aria-label="在新标签页打开独立文件站"
+      className="ml-auto shrink-0 inline-flex items-center gap-1 text-ui text-ink-soft hover:text-klein transition-colors"
+    >
+      文件站 <ExternalLink className="w-3 h-3" />
+    </a>
+  );
 }
 
 /** Copy text to the clipboard with an HTTP (non-secure-context) fallback.
@@ -565,6 +604,7 @@ export function FilesScreen({
       {/* Mobile */}
       <div className="flex-1 min-h-0 flex flex-col md:hidden overflow-hidden">
         <MobileFilesView
+          standalone={standalone}
           currentPath={currentPath}
           browse={browse}
           listLoading={listLoading}
@@ -595,6 +635,7 @@ export function FilesScreen({
       {/* Desktop */}
       <div className="hidden md:flex flex-1 min-h-0 overflow-hidden">
         <DesktopFilesView
+          standalone={standalone}
           currentPath={currentPath}
           browse={browse}
           listLoading={listLoading}
@@ -1327,6 +1368,9 @@ function PreviewPanel({
 // ---- mobile view -----------------------------------------------------------
 
 interface FilesViewProps {
+  /** Standalone ("文件站") mode — hides the FileStationLink corner link
+   *  because the standalone page IS the file station. */
+  standalone: boolean;
   currentPath: string | null;
   browse: BrowseData | null;
   listLoading: boolean;
@@ -1358,13 +1402,17 @@ function MobileFilesView(p: FilesViewProps) {
   return (
     <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
       <div className="px-3 pt-3 pb-2 bg-canvas/95 backdrop-blur border-b border-line shrink-0 space-y-2">
-        {/* Breadcrumb row */}
-        <Breadcrumb
-          path={p.currentPath ?? ""}
-          onNavigate={p.onNavigate}
-          onSubmitPath={p.onSubmitPath}
-          className="px-1"
-        />
+        {/* Breadcrumb row — the corner link to the standalone 文件站 sits at
+            its right edge, mirroring the "主站" link in files.html's top bar. */}
+        <div className="flex items-center gap-1.5">
+          <Breadcrumb
+            path={p.currentPath ?? ""}
+            onNavigate={p.onNavigate}
+            onSubmitPath={p.onSubmitPath}
+            className="flex-1 min-w-0 px-1"
+          />
+          {!p.standalone && <FileStationLink />}
+        </div>
         {/* Nav row: Home/Root/Up on the left (scrollable if it overflows),
             Show-hidden toggle pinned to the right so it's always visible
             on a 390px viewport — that was the original UX bug: the toggle
@@ -1637,6 +1685,7 @@ function DesktopFilesView(p: FilesViewProps) {
               onSubmitPath={p.onSubmitPath}
               className="flex-1 min-w-0"
             />
+            {!p.standalone && <FileStationLink />}
           </div>
           <div className="flex items-center gap-1.5">
             <div className="flex-1 min-w-0 overflow-x-auto no-scrollbar">
