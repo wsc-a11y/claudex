@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   decodeSlug,
+  encodeCwdToSlug,
   listCliSessions,
   resolveSlugToPath,
   truncateTitle,
@@ -95,15 +96,17 @@ describe("resolveSlugToPath", () => {
   });
 
   it("disambiguates a real-dash directory by probing the filesystem", () => {
-    // Build /<tmp>/proj-name on disk; the slug -<tmp>-proj-name should
-    // resolve to that, not /<tmp>/proj/name.
+    // Build <root>/proj-name on disk; the slug for realDir should resolve
+    // to that, not <root>/proj/name. encodeCwdToSlug keeps this test
+    // platform-agnostic (the old split("/") construction produced a
+    // non-slug on Windows backslash paths, which is why this used to fail
+    // there).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rsp-"));
     disposers.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const realDir = path.join(root, "proj-name");
     fs.mkdirSync(realDir);
 
-    // Build the slug for realDir (every "/" → "-").
-    const slug = realDir.split("/").join("-");
+    const slug = encodeCwdToSlug(realDir);
     expect(resolveSlugToPath(slug)).toBe(realDir);
   });
 
@@ -116,7 +119,7 @@ describe("resolveSlugToPath", () => {
     fs.mkdirSync(path.join(root, "a", "b"), { recursive: true });
     fs.mkdirSync(path.join(root, "a-b"));
 
-    const slug = (root + "/a-b").split("/").join("-");
+    const slug = encodeCwdToSlug(path.join(root, "a-b"));
     expect(resolveSlugToPath(slug)).toBe(path.join(root, "a", "b"));
   });
 
@@ -132,6 +135,48 @@ describe("resolveSlugToPath", () => {
       "D:\\Code-Golang-management-be-go",
     );
   });
+
+  it("resolves a Windows slug to a registered real path via knownPaths", () => {
+    // The regression that made forks of adopted CLI sessions unstartable:
+    // resolveSlugToPath("C--Users-80549-Desktop-LoongArch") used to return
+    // the lossy "C:\Users-80549-Desktop-LoongArch" (a directory that doesn't
+    // exist) because encodeCwdToSlug returned Windows paths verbatim, so the
+    // knownPaths hint never matched. The hint must now win on every
+    // platform.
+    expect(
+      resolveSlugToPath("C--Users-80549-Desktop-LoongArch", {
+        knownPaths: ["C:\\Users\\80549\\Desktop\\LoongArch"],
+      }),
+    ).toBe("C:\\Users\\80549\\Desktop\\LoongArch");
+  });
+
+  it("encodes Windows cwds with the CLI's blanket character rule", () => {
+    // Real transcript evidence: c:\Users\80549\Desktop\新建文件夹 (3) lives
+    // under slug c--Users-80549-Desktop--------3- (every non-ASCII char —
+    // 中文, space, parens — becomes its own '-').
+    const real = "c:\\Users\\80549\\Desktop\\新建文件夹 (3)";
+    const slug = real.replace(/[^A-Za-z0-9]/g, "-");
+    expect(slug).toBe("c--Users-80549-Desktop--------3-");
+    expect(resolveSlugToPath("C--Users-80549-Desktop-LoongArch", {
+      knownPaths: ["C:\\Users\\80549\\Desktop\\LoongArch", real],
+    })).toBe("C:\\Users\\80549\\Desktop\\LoongArch");
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "probes the filesystem for a Windows real-dash directory",
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rspw-"));
+      disposers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+      const realDir = path.join(root, "proj-name");
+      fs.mkdirSync(realDir);
+      // Drive-prefixed slug for realDir, e.g. C--Users-...-rspw-x-proj-name.
+      const slug =
+        realDir.charAt(0) +
+        "--" +
+        realDir.slice(3).replace(/[^A-Za-z0-9]/g, "-");
+      expect(resolveSlugToPath(slug)).toBe(realDir);
+    },
+  );
 });
 
 describe("truncateTitle", () => {

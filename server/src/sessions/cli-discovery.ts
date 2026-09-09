@@ -53,16 +53,25 @@ export function decodeSlug(slug: string): string {
 }
 
 /**
- * Encode an absolute cwd into the CLI's slug convention: every `/` becomes
- * `-`, so `/Users/hao/Code/foo` becomes `-Users-hao-Code-foo`. Inverse of
- * `decodeSlug`. Lossy in the same way the CLI is: real `-` in directory
- * names will collide with the separator. Returns the input unchanged if it
- * isn't an absolute path (defensive — callers should pass cwds that came
- * from `lsof -p <pid> -d cwd` or similar).
+ * Encode an absolute cwd into the CLI's slug convention: every character
+ * that isn't `[A-Za-z0-9]` becomes `-`, so:
+ *   POSIX    `/Users/hao/Code/foo`  → `-Users-hao-Code-foo`
+ *   Windows  `C:\Code\foo bar`      → `C--Code-foo-bar`
+ * (`:` and the first `\` collapse into the `X--` drive prefix; spaces,
+ * dots, Chinese, parens and real dashes all become `-` — that's why slugs
+ * round-trip lossily and `resolveSlugToPath` needs hints / probing.)
+ *
+ * The previous implementation only handled POSIX (`split("/").join("-")`)
+ * and returned Windows paths verbatim, so `knownPaths` matching never hit
+ * on Windows and adopted-CLI sessions were registered under the lossy
+ * decode (`C:\Users-80549-Desktop-LoongArch`) instead of the real
+ * directory. Real CLI transcripts confirm the blanket character rule:
+ * `c:\Users\80549\Desktop\新建文件夹 (3)` sits under slug
+ * `c--Users-80549-Desktop--------3-`.
  */
 export function encodeCwdToSlug(cwd: string): string {
-  if (!cwd.startsWith("/")) return cwd;
-  return cwd.split("/").join("-");
+  if (!cwd) return cwd;
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
 }
 
 /**
@@ -87,6 +96,9 @@ export function resolveSlugToPath(
   slug: string,
   opts?: { knownPaths?: readonly string[] },
 ): string {
+  // 1. Known-path hint: first known path whose re-encode matches the slug
+  //    wins — exact, no fs probing. Works on every platform now that
+  //    encodeCwdToSlug applies the CLI's blanket character rule.
   if (opts?.knownPaths) {
     for (const p of opts.knownPaths) {
       if (encodeCwdToSlug(p) === slug) return p;
@@ -94,18 +106,42 @@ export function resolveSlugToPath(
   }
 
   const winMatch = slug.match(/^-?([A-Za-z])--(.*)$/);
-  if (winMatch) return `${winMatch[1]}:\\${winMatch[2]}`;
+  if (winMatch) {
+    const drive = `${winMatch[1]}:\\`;
+    // 2. Windows fs probe: try treating each `-` as either a separator or a
+    //    literal dash, fewest literal dashes first. Only meaningful for
+    //    pure-ASCII slugs — a body with empty segments (`Desktop--------3-`
+    //    from 中文/spaces) can't be re-derived character-by-character, so
+    //    probeByMask bails and we fall back to the lossy decode.
+    return probeByMask(drive, winMatch[2]) ?? `${drive}${winMatch[2]}`;
+  }
 
   const body = slug.startsWith("-") ? slug.slice(1) : slug;
-  const parts = body.split("-");
-  if (parts.length <= 1) return "/" + body;
+  if (body === "") return "/";
+  // 2. POSIX fs probe (same rationale), then the naive all-separators
+  //    decode — the CLI's own interpretation when nothing exists on disk.
+  return probeByMask("/", body) ?? "/" + body.split("-").join("/");
+}
 
+/**
+ * Enumerate candidate decodings of a slug body (treating each `-` as either
+ * a path separator or a literal dash) under a root prefix, ordered by
+ * "fewest literal dashes first" so the most-common interpretation is tried
+ * first. Returns the first candidate that exists on disk, or null.
+ *
+ * Bodies containing empty segments (two or more adjacent `-`, which on
+ * Windows means the original had consecutive non-ASCII chars — 中文, spaces,
+ * parens) are skipped: each empty segment is an unrecoverable character, so
+ * probing would only ever miss and the caller's lossy fallback is the
+ * honest answer. A hard N≤16 cap keeps the worst case bounded at 65536
+ * candidates; paths deeper than that fall back to naive.
+ */
+function probeByMask(prefix: string, body: string): string | null {
+  const parts = body.split("-");
+  if (parts.length <= 1) return null;
+  if (parts.some((s) => s.length === 0)) return null;
   const N = parts.length - 1;
-  // Hard cap to keep the worst case bounded. With N≤16 we enumerate at most
-  // 65536 candidates; in practice the right answer is usually found within
-  // the first few. Beyond that, fall back to naive — paths this deep are
-  // exotic and the lossy result matches the CLI's own interpretation.
-  if (N > 16) return "/" + parts.join("/");
+  if (N > 16) return null;
 
   const masks: number[] = [];
   for (let m = 0; m < 1 << N; m++) masks.push(m);
@@ -120,15 +156,17 @@ export function resolveSlugToPath(
         segments.push(parts[i + 1]);
       }
     }
-    const candidate = "/" + segments.join("/");
+    // path.sep keeps the probe result in native form — on Windows a
+    // mixed `C:\Users/80549/...` string would pass existsSync but come back
+    // with forward slashes, diverging from what callers persist as cwd.
+    const candidate = prefix + segments.join(path.sep);
     try {
       if (fs.existsSync(candidate)) return candidate;
     } catch {
       // ignore — treat as not-existing
     }
   }
-
-  return "/" + parts.join("/");
+  return null;
 }
 
 function popcount(n: number): number {
@@ -149,6 +187,7 @@ function popcount(n: number): number {
  */
 export async function listCliSessions(
   root: string = defaultCliProjectsRoot(),
+  opts?: { knownPaths?: readonly string[] },
 ): Promise<CliSessionSummary[]> {
   let slugs: string[];
   try {
@@ -170,7 +209,13 @@ export async function listCliSessions(
     }
     if (!stat.isDirectory()) continue;
 
-    const cwd = resolveSlugToPath(slug);
+    // Known registered paths are the only way to re-derive real Windows
+    // dirs with non-ASCII components (the slug loses those characters); pass
+    // them through so list results (and anything imported from them) land on
+    // the real project path rather than the lossy decode.
+    const cwd = resolveSlugToPath(slug, {
+      knownPaths: opts?.knownPaths,
+    });
     let entries: string[];
     try {
       entries = await fsp.readdir(dir);

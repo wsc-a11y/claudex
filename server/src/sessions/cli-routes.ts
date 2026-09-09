@@ -36,11 +36,18 @@ export async function registerCliRoutes(
   const projects = new ProjectStore(deps.db);
   const sessions = new SessionStore(deps.db);
 
+  // Registered project paths are hints for slug→path resolution: a CLI
+  // session whose cwd re-encodes to one of them is reported (and imported)
+  // under the REAL path — without this, Windows sessions land on the lossy
+  // decode (`C:\Users-80549-Desktop-LoongArch`) and any fork/new-SDK work
+  // under that project fails because the cwd doesn't exist.
+  const knownPaths = projects.list().map((p) => p.path);
+
   app.get(
     "/api/cli/sessions",
     { preHandler: app.requireAuth as any },
     async (_req, reply) => {
-      const discovered = await listCliSessions(root);
+      const discovered = await listCliSessions(root, { knownPaths });
       // Hide sessions that are already adopted so the UI only shows
       // actionable rows. Keeps the "import everything" button honest.
       const filtered = discovered.filter(
@@ -58,7 +65,7 @@ export async function registerCliRoutes(
       if (!parsed.success) {
         return reply.code(400).send({ error: "bad_request" });
       }
-      const discovered = await listCliSessions(root);
+      const discovered = await listCliSessions(root, { knownPaths });
       const byId = new Map(discovered.map((s) => [s.sessionId, s]));
 
       const imported = [];
