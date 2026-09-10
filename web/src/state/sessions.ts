@@ -965,6 +965,19 @@ export const useSessions = create<SessionState>((set, get) => {
     client.subscribe((frame) => {
       // Connection liveness tracked via hello_ack
       if (frame.type === "hello_ack") set({ connected: true });
+      // Stop-button outcome. The server replies point-to-point so only the
+      // tab that pressed stop sees this. `ok: true` needs no feedback (the
+      // status dot moving back to idle IS the feedback); a failed stop used
+      // to be a silent no-op — now it explains itself via the 1.6s toast.
+      if (frame.type === "interrupt_result" && !frame.ok) {
+        toast(
+          frame.reason === "held_externally"
+            ? "暂停未生效：此会话正被外部 CLI 占用（VSCode/终端）——请到那边暂停"
+            : frame.reason === "interrupt_failed"
+              ? "暂停失败：无法中断正在运行的进程，请重试"
+              : "没有正在运行的任务可暂停",
+        );
+      }
       if (frame.type === "session_update") {
         const sid = frame.sessionId;
         // Snapshot pre-transition state so we can decide whether to fire a

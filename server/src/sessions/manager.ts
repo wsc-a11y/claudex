@@ -1398,10 +1398,40 @@ export class SessionManager {
     });
   }
 
-  async interrupt(sessionId: string): Promise<void> {
+  /**
+   * Ask the live runner to interrupt the in-flight turn. Returns an
+   * explicit outcome instead of silently no-op'ing — a dead stop button is
+   * how the "paused but still outputting" bug felt from the UI.
+   *
+   *   - no runner: the row's status decides the reason. `cli_running` means
+   *     an external claude (VSCode / terminal) owns the transcript and
+   *     claudex cannot reach it — `held_externally`. Anything else means
+   *     there was simply nothing running on our side — `no_runner`.
+   *   - runner present: the SDK interrupt itself is the last word; a throw
+   *     surfaces as `interrupt_failed` so the tab can tell the user the
+   *     stop didn't take.
+   */
+  async interrupt(
+    sessionId: string,
+  ): Promise<{
+    ok: boolean;
+    reason?: "held_externally" | "no_runner" | "interrupt_failed";
+  }> {
     const entry = this.runners.get(sessionId);
-    if (!entry) return;
-    await entry.runner.interrupt();
+    if (!entry) {
+      const row = this.deps.sessions.findById(sessionId);
+      return {
+        ok: false,
+        reason:
+          row?.status === "cli_running" ? "held_externally" : "no_runner",
+      };
+    }
+    try {
+      await entry.runner.interrupt();
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "interrupt_failed" };
+    }
   }
 
   /**

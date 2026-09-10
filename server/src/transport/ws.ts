@@ -293,7 +293,15 @@ async function handleClientFrame(
       return;
     }
     case "interrupt": {
-      await deps.manager.interrupt(frame.sessionId);
+      const outcome = await deps.manager.interrupt(frame.sessionId);
+      // Point-to-point result — only the tab that pressed stop needs to
+      // know it didn't take. Broadcast would toast every open tab.
+      state.send({
+        type: "interrupt_result",
+        sessionId: frame.sessionId,
+        ok: outcome.ok,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+      });
       return;
     }
     case "permission_decision": {

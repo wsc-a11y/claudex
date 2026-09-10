@@ -304,6 +304,26 @@ export const ServerError = z.object({
   message: z.string(),
 });
 
+// Point-to-point reply to a `ClientInterrupt` frame, sent only to the
+// originating connection (not broadcast — other tabs don't care that you
+// pressed stop). `ok: false` carries a machine-readable reason so the
+// originating tab can explain WHY the stop didn't happen instead of
+// silently doing nothing:
+//   - `held_externally` — the session row is `cli_running`: a live external
+//     claude (VSCode / terminal) owns the transcript; claudex has no runner
+//     attached and cannot reach that process. Tell the user to stop there.
+//   - `no_runner` — no runner attached and the row isn't cli_running either
+//     (idle session, or the scanner hasn't promoted it yet). Nothing to stop.
+//   - `interrupt_failed` — a runner existed but the SDK interrupt threw.
+export const ServerInterruptResult = z.object({
+  type: z.literal("interrupt_result"),
+  sessionId: z.string(),
+  ok: z.boolean(),
+  reason: z
+    .enum(["held_externally", "no_runner", "interrupt_failed"])
+    .optional(),
+});
+
 // ---- Subagent live stream (s-17) ----------------------------------------
 //
 // Mirror the SubagentStartPayload / … shapes from `models.ts` so the server
@@ -397,6 +417,7 @@ export const ServerFrame = z.discriminatedUnion("type", [
   ServerQueueUpdate,
   ServerAlertsUpdate,
   ServerError,
+  ServerInterruptResult,
   ServerSubagentStart,
   ServerSubagentProgress,
   ServerSubagentUpdate,
