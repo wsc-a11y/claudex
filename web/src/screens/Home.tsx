@@ -906,7 +906,7 @@ function statusPillLabel(status: string): string {
     case "awaiting":
       return "需要你处理";
     case "cli_running":
-      return "CLI 运行中";
+      return "被占用";
     case "running":
       return "运行中";
     case "error":

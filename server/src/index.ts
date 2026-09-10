@@ -104,12 +104,13 @@ async function main() {
     }
   }
 
-  // CLI process scanner — every 5s, walk `ps` + `lsof` to find live `claude`
-  // CLI processes and flip idle claudex rows to `cli_running` when there's
-  // a live external process attached to the same SDK session. Pure
-  // observability — composer is NOT locked by this status. Disabled in
-  // tests and under the same `CLAUDEX_WATCH_CLI=0` kill switch as the
-  // watcher.
+  // CLI process scanner — every 5s (15s on Windows, where each tick is a
+  // PowerShell WMI cold start), walk `ps` + `lsof` / WMI to find live
+  // `claude` CLI processes and flip idle claudex rows to `cli_running`
+  // ("被占用") when there's a live external process attached to the same
+  // SDK session. The composer locks on that status — the external process
+  // is the only one that can be interrupted. Disabled in tests and under
+  // the same `CLAUDEX_WATCH_CLI=0` kill switch as the watcher.
   if (
     process.env.NODE_ENV !== "test" &&
     process.env.CLAUDEX_WATCH_CLI !== "0"

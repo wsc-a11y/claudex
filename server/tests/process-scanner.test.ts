@@ -14,6 +14,8 @@ import {
   buildPidSessionMap,
   reconcile,
   newestJsonlSessionId,
+  parseWindowsProcessList,
+  listWindowsClaudeProcesses,
 } from "../src/cli-sync/process-scanner.js";
 import { tempConfig } from "./helpers.js";
 
@@ -69,6 +71,91 @@ describe("parseClaudeProcess", () => {
     expect(parseClaudeProcess("claude --resume not-a-uuid")).toEqual({
       kind: "plain",
     });
+  });
+
+  it("accepts the Windows native binary basename (`claude.exe`)", () => {
+    // VSCode extension / SDK bundle argv on Windows — basename is
+    // `claude.exe`, case matters. This is the exact shape the WMI lister
+    // feeds in.
+    expect(
+      parseClaudeProcess(
+        `c:\\Users\\80549\\.vscode\\extensions\\anthropic.claude-code-2.1.167-win32-x64\\resources\\native-binary\\claude.exe --output-format stream-json --verbose --resume ${SDK_A} --permission-mode auto`,
+      ),
+    ).toEqual({ kind: "resume", sessionId: SDK_A });
+    expect(
+      parseClaudeProcess(
+        "d:\\claudex\\node_modules\\.pnpm\\@anthropic-ai+claude-agent-sdk-win32-x64@0.2.141\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe --resume " +
+          SDK_B,
+      ),
+    ).toEqual({ kind: "resume", sessionId: SDK_B });
+    expect(
+      parseClaudeProcess("c:\\path\\to\\claude.exe"),
+    ).toEqual({ kind: "plain" });
+  });
+
+  it("rejects the Desktop GUI app (`Claude.exe`, capital C)", () => {
+    expect(parseClaudeProcess("c:\\Users\\x\\AppData\\Local\\AnthropicClaude\\Claude.exe")).toBeNull();
+  });
+});
+
+describe("parseWindowsProcessList", () => {
+  it("parses a multi-row PowerShell ConvertTo-Json output", () => {
+    const json =
+      '[{"cmd":"c:\\\\a\\\\claude.exe --resume aaaaaaaa-1111-2222-3333-444444444444","pid":100},' +
+      '{"cmd":"c:\\\\b\\\\claude.exe","pid":200}]';
+    expect(parseWindowsProcessList(json)).toEqual([
+      { pid: 100, args: "c:\\a\\claude.exe --resume aaaaaaaa-1111-2222-3333-444444444444" },
+      { pid: 200, args: "c:\\b\\claude.exe" },
+    ]);
+  });
+
+  it("normalizes a single-object output (PowerShell omits the array for one match)", () => {
+    const json = '{"cmd":"c:\\\\a\\\\claude.exe","pid":42}';
+    expect(parseWindowsProcessList(json)).toEqual([
+      { pid: 42, args: "c:\\a\\claude.exe" },
+    ]);
+  });
+
+  it("returns [] for empty output (no claude.exe running)", () => {
+    expect(parseWindowsProcessList("")).toEqual([]);
+    expect(parseWindowsProcessList("   ")).toEqual([]);
+    expect(parseWindowsProcessList("null")).toEqual([]);
+  });
+
+  it("returns [] on malformed JSON or bad row shapes", () => {
+    expect(parseWindowsProcessList("not-json")).toEqual([]);
+    expect(parseWindowsProcessList('[{"pid":"nope"}]')).toEqual([]);
+  });
+});
+
+describe("listWindowsClaudeProcesses", () => {
+  it("runs the WMI query and parses the JSON back into pid/args rows", () => {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const rows = listWindowsClaudeProcesses((cmd, args) => {
+      calls.push({ cmd, args });
+      return (
+        '[{"cmd":"c:\\\\ext\\\\claude.exe --resume ' +
+        SDK_A +
+        '","pid":7},{"cmd":"c:\\\\sdk\\\\claude.exe --resume ' +
+        SDK_B +
+        '","pid":8}]'
+      );
+    });
+    expect(rows).toEqual([
+      { pid: 7, args: "c:\\ext\\claude.exe --resume " + SDK_A },
+      { pid: 8, args: "c:\\sdk\\claude.exe --resume " + SDK_B },
+    ]);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0].args).toContain("-NoProfile");
+    expect(calls[0].args.join(" ")).toContain("Win32_Process");
+  });
+
+  it("returns [] when every candidate executor throws", () => {
+    expect(
+      listWindowsClaudeProcesses(() => {
+        throw new Error("powershell missing");
+      }),
+    ).toEqual([]);
   });
 });
 

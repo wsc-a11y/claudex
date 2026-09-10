@@ -14,7 +14,10 @@ import {
  * CLI process scanner — periodically enumerates live `claude` CLI processes on
  * the host and maps each one to a claudex session via its SDK session id, so
  * idle claudex rows whose external CLI is currently alive can be surfaced as
- * `cli_running` (an observability signal, NOT a composer lockout).
+ * `cli_running` ("被占用"). The composer locks on that status: two writers
+ * on one transcript is what made claudex's interrupt feel dead (it only
+ * reaches claudex's own child, not the external process that's actually
+ * talking).
  *
  * Design:
  *   - `ps -axo pid,args` gives us every process + its argv (macOS + Linux
@@ -83,8 +86,19 @@ const SDK_ID_RE =
  * compatible. Returns [] on failure rather than throwing — the scanner is
  * best-effort supervision; an unexpected `ps` failure must never crash the
  * server.
+ *
+ * Windows takes a different path: `ps` in Git Bash only sees MSYS processes
+ * (and dev-manager-launched servers have no `ps` on PATH at all), so we
+ * enumerate via WMI with a focused `Name='claude.exe'` filter — the query
+ * runs provider-side and comes back as one JSON array. The `claude.exe`
+ * filter intentionally excludes `Claude.exe` (Desktop app) and every other
+ * process, so no basename triage happens here; `parseClaudeProcess` still
+ * re-checks the basename defensively.
  */
 function defaultListProcesses(): Array<{ pid: number; args: string }> {
+  if (process.platform === "win32") {
+    return listWindowsClaudeProcesses();
+  }
   try {
     const out = execFileSync("ps", ["-axo", "pid=,args="], {
       encoding: "utf-8",
@@ -109,12 +123,100 @@ function defaultListProcesses(): Array<{ pid: number; args: string }> {
 }
 
 /**
+ * PowerShell one-liner the Windows lister runs. Filter is WMI-provider-side
+ * so the cold-start cost (~500ms) dominates. `[Console]::OutputEncoding`
+ * forces UTF-8 on the pipe — without it, paths with non-ASCII chars (the
+ * user has 中文 directory names) come back in the OEM code page and break
+ * JSON parsing. `ConvertTo-Json -Compress` gives us a parseable array even
+ * when a single process matches (no `-NoEnumerate` pitfalls since we wrap
+ * each row in an object).
+ */
+const WINDOWS_PROCESS_QUERY =
+  "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " +
+  "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | " +
+  "ForEach-Object { @{ pid = $_.ProcessId; cmd = $_.CommandLine } } | " +
+  "ConvertTo-Json -Compress";
+
+/** Default executor for the Windows lister; injectable in tests. */
+function defaultPowershellExec(cmd: string, args: string[]): string {
+  return execFileSync(cmd, args, {
+    encoding: "utf-8",
+    maxBuffer: 2 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+}
+
+/**
+ * Enumerate live `claude.exe` processes via WMI. Returns [] on any failure —
+ * same best-effort contract as the POSIX path.
+ */
+export function listWindowsClaudeProcesses(
+  exec: (cmd: string, args: string[]) => string = defaultPowershellExec,
+): Array<{ pid: number; args: string }> {
+  // Absolute path first: the server may run under a launcher (dev-manager)
+  // with a trimmed PATH. Fall back to bare `powershell.exe` for any host
+  // where SystemRoot is unset (shouldn't happen on real Windows).
+  const sysroot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  const candidates = [
+    ...(sysroot
+      ? [path.join(sysroot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")]
+      : []),
+    "powershell.exe",
+  ];
+  const args = ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_QUERY];
+  for (const exe of candidates) {
+    try {
+      return parseWindowsProcessList(exec(exe, args));
+    } catch {
+      // try the next candidate
+    }
+  }
+  return [];
+}
+
+/**
+ * Parse the PowerShell `ConvertTo-Json` output into `{pid, args}` rows.
+ * Pure — unit-tested against a captured fixture. An empty result set comes
+ * back as an empty string; a single match arrives as a bare object, not an
+ * array, so both shapes are normalized.
+ */
+export function parseWindowsProcessList(
+  json: string,
+): Array<{ pid: number; args: string }> {
+  const trimmed = json.trim();
+  if (!trimmed) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  const arr = Array.isArray(parsed) ? parsed : [parsed];
+  const rows: Array<{ pid: number; args: string }> = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const { pid, cmd } = item as { pid?: unknown; cmd?: unknown };
+    if (typeof pid !== "number" || typeof cmd !== "string") continue;
+    rows.push({ pid, args: cmd });
+  }
+  return rows;
+}
+
+/**
  * Default cwd lookup via `lsof`. The `-Fn` output prefixes each field with a
  * one-letter tag; the line starting with `n` carries the path. Works the
  * same on macOS and Linux. Returns null on any failure (process gone,
  * permission denied, etc.).
+ *
+ * Windows: no equivalent of `lsof -d cwd` without heavyweight P/Invoke, so
+ * plain `claude.exe` (no `--resume` in argv) is NOT resolvable on Windows.
+ * Accepted limit: the VSCode extension — the case this scanner exists for —
+ * always passes `--resume <uuid>`, and a terminal `claude` without it is a
+ * fresh session the fs watcher will adopt as a new row anyway.
  */
 function defaultGetCwdForPid(pid: number): string | null {
+  if (process.platform === "win32") return null;
   try {
     const out = execFileSync(
       "lsof",
@@ -152,12 +254,14 @@ export function parseClaudeProcess(args: string):
   const exe = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
   const rest = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1);
 
-  // Basename must be exactly `claude` — rejects `claudex`, `claude-code`,
-  // `claudexd`, `Claude.app/.../Claude` (GUI app), etc. We use simple
-  // path.basename rather than a regex because argv paths can include any
-  // character.
+  // Basename must be exactly `claude` (POSIX) or `claude.exe` (Windows
+  // native binary — VSCode extension, SDK bundle, npm global). Case-
+  // sensitive on purpose: `Claude` / `Claude.exe` (Desktop GUI app) is
+  // rejected. Also rejects `claudex`, `claude-code`, `claudexd`. We use
+  // simple path.basename rather than a regex because argv paths can include
+  // any character.
   const base = path.basename(exe);
-  if (base !== "claude") return null;
+  if (base !== "claude" && base !== "claude.exe") return null;
 
   // `claude --resume <uuid>` → pick the uuid out of argv. Tolerate extra
   // flags before/after (`-d`, `--model foo`, etc.) by scanning for the
@@ -336,7 +440,12 @@ function demoteToIdle(
  * completes without blocking on process enumeration.
  */
 export function startProcessScanner(deps: ProcessScannerDeps): ProcessScanner {
-  const interval = deps.intervalMs ?? 5000;
+  // Windows ticks are pricier: each scan is a fresh PowerShell cold start
+  // (~500ms measured), so the default interval is 3x the POSIX one. The
+  // flip still lands within 15s, which is fine for an observability signal
+  // on a machine where the user is usually looking at the other window.
+  const interval =
+    deps.intervalMs ?? (process.platform === "win32" ? 15_000 : 5_000);
   const cliProjectsRoot = deps.cliProjectsRoot ?? defaultCliProjectsRoot();
   const listProcesses = deps.listProcesses ?? defaultListProcesses;
   const getCwdForPid = deps.getCwdForPid ?? defaultGetCwdForPid;

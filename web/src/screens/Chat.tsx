@@ -4393,7 +4393,13 @@ function Composer({
   // instead of flipping to `error`, so a restart doesn't eat in-flight
   // work.
   const isErrored = session?.status === "error";
-  const isLocked = isArchived || isErrored;
+  // External CLI attached (VSCode / terminal running the same SDK session).
+  // Locked like archived/error: two writers on one transcript is exactly the
+  // "paused but still outputting" confusion — sending from claudex while the
+  // external process holds the session makes that process the only one
+  // that can be interrupted. See process-scanner.ts.
+  const isCliRunning = session?.status === "cli_running";
+  const isLocked = isArchived || isErrored || isCliRunning;
   const [text, setText] = useState("");
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   // Spinner lock for the quick "new session" pill in the toolbar. Local to
@@ -4976,6 +4982,15 @@ function Composer({
           会话出错 — 请新建会话以继续。
         </div>
       )}
+      {isCliRunning && !isArchived && !isErrored && (
+        <div
+          className="text-ui text-klein-ink px-3 py-1 border-t border-line bg-klein-wash/40 flex items-center gap-1.5"
+          role="status"
+        >
+          <span aria-hidden="true">●</span>
+          此会话正被外部 CLI 占用(VSCode / 终端)——请到那边继续,退出后即可从这里接管。
+        </div>
+      )}
 
       <div
         className="shrink-0 border-t border-line bg-canvas px-3 pt-2 pb-3 mt-2 md:px-5 md:pt-3 md:pb-4"
@@ -5153,6 +5168,8 @@ function Composer({
                 ? "此会话已归档 — 只读"
                 : isErrored
                 ? "会话出错 — 请新建会话以继续"
+                : isCliRunning
+                ? "此会话正被外部 CLI 占用 — 请到那边继续"
                 : busy
                 ? "可在此输入，claude 思考时消息会加入队列…"
                 : "输入消息… 试试用 / 或 @"
