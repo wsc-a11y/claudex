@@ -93,3 +93,42 @@ export async function backfillCliSessionTitles(deps: {
 
   return { scanned, retitled };
 }
+
+/**
+ * Re-derive one CLI-adopted session's title from its transcript and write it
+ * back if it changed. Returns the new title when it wrote, else null.
+ *
+ * The boot backfill alone isn't enough: the CLI re-writes `ai-title` as a
+ * conversation progresses, so a session that keeps being used from the CLI
+ * (or from the VS Code extension) drifts — its claudex title goes stale
+ * while its transcript stays current, because resync imports events but has
+ * never touched the title. Calling this from the resync path closes that gap
+ * at the moment the drift becomes visible (the JSONL grew, or the user
+ * reopened the session).
+ *
+ * Cheap by construction: callers only invoke it once they know the JSONL
+ * actually grew, so the extra full-file read rides along with work that was
+ * happening anyway. Native sessions must not call it — they have no CLI
+ * title records and their titles come from the user's first message.
+ */
+export async function refreshCliSessionTitle(deps: {
+  sessions: SessionStore;
+  sessionId: string;
+  currentTitle: string;
+  jsonlPath: string;
+  logger?: { debug?: (obj: unknown, msg?: string) => void };
+}): Promise<string | null> {
+  let title: string;
+  try {
+    title = await readCliSessionTitle(deps.jsonlPath);
+  } catch (err) {
+    deps.logger?.debug?.(
+      { err, sessionId: deps.sessionId },
+      "cli title refresh: failed to read transcript, skipping",
+    );
+    return null;
+  }
+  if (title.length === 0 || title === deps.currentTitle) return null;
+  deps.sessions.setTitle(deps.sessionId, title);
+  return title;
+}

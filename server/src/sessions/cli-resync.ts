@@ -6,6 +6,7 @@ import type { SessionStore } from "./store.js";
 import type { SessionManager } from "./manager.js";
 import { defaultCliProjectsRoot } from "./cli-discovery.js";
 import { importCliSessionEvents } from "./cli-events-import.js";
+import { refreshCliSessionTitle } from "./backfill-cli-titles.js";
 
 export interface CliResyncDeps {
   sessions: SessionStore;
@@ -102,6 +103,30 @@ export async function resyncCliSession(
 
   const added = await appendFromLine(deps, session.id, filePath, skip);
   deps.sessions.setCliJsonlSeq(session.id, lineCount);
+
+  // The transcript grew, so the CLI may also have re-titled the session
+  // (`ai-title` is re-emitted as a conversation evolves). Refresh here, in
+  // the branch that already paid for a full read, and deliberately NOT in
+  // the no-op fast path above — a title only changes alongside new lines,
+  // so the common "opened the session, nothing new" case stays free.
+  // Returning early on failure keeps a title problem from breaking resync.
+  try {
+    const newTitle = await refreshCliSessionTitle({
+      sessions: deps.sessions,
+      sessionId: session.id,
+      currentTitle: session.title,
+      jsonlPath: filePath,
+      logger: deps.logger,
+    });
+    if (newTitle !== null && deps.manager) {
+      deps.manager.notifyTitleChanged(session.id, newTitle);
+    }
+  } catch (err) {
+    deps.logger?.debug?.(
+      { err, sessionId: session.id },
+      "cli resync: title refresh failed",
+    );
+  }
 
   if (added > 0 && deps.manager) {
     try {

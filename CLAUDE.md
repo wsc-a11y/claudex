@@ -125,14 +125,25 @@ you are creating that mess. Commit and push now; iterate on top.
    BRANCH="$(git rev-parse --abbrev-ref HEAD)"
    git rebase main                          # no-op if already on tip
    git -C "$ROOT" merge --ff-only "$BRANCH"
-   https_proxy=http://localhost:7890 http_proxy=http://localhost:7890 \
-     git -C "$ROOT" push origin main
+   git -C "$ROOT" push origin main
    ```
    If the session is NOT on a worktree (rare — only when the user
    explicitly opted out), the old flow applies: `git commit` lands
    directly on main and a single `git push origin main` closes the
-   batch. Outbound git/npm/curl always need the proxy; localhost
-   does not.
+   batch.
+
+   **Do NOT push through a proxy.** The local proxy ports (7890, 7897)
+   are dead on this machine, and `git config http.proxy` still points at
+   7897 — so a bare `git push` dies with `Failed to connect to 127.0.0.1
+   port 7897`. Push **direct**: bypass the stale config rather than
+   exporting proxy env vars:
+   ```sh
+   https_proxy= http_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= \
+     git -c http.proxy= -c https.proxy= push origin main
+   ```
+   Direct connections to github.com are occasionally reset; retry the
+   same command a few times with a short sleep before reporting failure.
+   Never "fix" this by re-enabling the proxy — it is not running.
 7. **Wait for the user's go-ahead, then restart the server.** Restart is
    gated: after pushing, report the batch is ready and stop. Only when
    the user explicitly says to restart (e.g. "restart", "重启", "go") do
@@ -367,10 +378,12 @@ the user has better context on which side should win. They'll tell you
 whether to re-run the rebase with manual resolution, merge main into
 the worktree for local resolution, or hand-edit from there.
 
-After the merge succeeds, push main through the proxy:
+After the merge succeeds, push main — direct, never through a proxy
+(see "Do NOT push through a proxy" in step 6 for why and for the retry
+policy):
 ```sh
-https_proxy=http://localhost:7890 http_proxy=http://localhost:7890 \
-  git -C "$ROOT" push origin main
+https_proxy= http_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= \
+  git -C "$ROOT" -c http.proxy= -c https.proxy= push origin main
 ```
 
 **Never** run `git push origin "$BRANCH"` for a `claude/*` worktree
@@ -416,9 +429,10 @@ ambiguous — ask, don't assume.
    the last tag and group highlights by feature area. Don't use
    `--generate-notes`.
 
-5. **Create the release** via `gh`:
+5. **Create the release** via `gh` — direct, never through a proxy (same
+   rule as pushing; see step 6 of the iteration loop):
    ```sh
-   https_proxy=http://localhost:7890 http_proxy=http://localhost:7890 \
+   https_proxy= http_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= \
      gh release create vX.Y.Z \
        --title "vX.Y.Z — <short summary>" \
        --latest \

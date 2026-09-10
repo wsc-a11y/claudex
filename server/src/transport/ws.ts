@@ -351,6 +351,10 @@ function runnerEventToFrame(
             : event.status === "starting"
               ? "running"
               : event.status,
+        // Present only when the emitter is renaming the session (the CLI
+        // title resync path). Ordinary transitions omit it and the client
+        // keeps whatever title it already has.
+        ...(event.title !== undefined ? { title: event.title } : {}),
       };
     case "sdk_session_id":
       return null; // nothing to tell the browser

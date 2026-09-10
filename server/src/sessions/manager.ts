@@ -1342,6 +1342,40 @@ export class SessionManager {
   }
 
   /**
+   * Broadcast a `session_update` carrying a new title so every tab's list
+   * view (Home, ChatSessionsRail) renames the row without a refetch.
+   *
+   * Used by the CLI resync path: the CLI re-writes `ai-title` as a
+   * conversation progresses, so an adopted session whose transcript just
+   * grew may have been renamed on the CLI side. The sibling
+   * `notifyTranscriptRefresh` can't do this job — `refresh_transcript` only
+   * refetches events and carries no title.
+   *
+   * The DB row is expected to already hold the new title; this is pure
+   * broadcast. Reads it back only to fill the frame's required `status`
+   * field. No-op if the row vanished mid-resync.
+   */
+  notifyTitleChanged(sessionId: string, title: string): void {
+    const row = this.deps.sessions.findById(sessionId);
+    if (!row) return;
+    // `session_update` is emitted by the bridge from a `status` event, so we
+    // ride along on one rather than inventing a frame type. The status
+    // value is the row's current one — we're not claiming a transition,
+    // only attaching the new title.
+    //
+    // Statuses the bridge doesn't accept are passed through unchanged:
+    // `archived` would be an invalid frame (the bridge's union excludes it
+    // and the client maps it itself), so skip the broadcast entirely — an
+    // archived session's list row is not being watched for renames.
+    if (row.status === "archived") return;
+    this.deps.broadcast(sessionId, {
+      type: "status",
+      status: row.status,
+      title,
+    });
+  }
+
+  /**
    * Broadcast a synthesized `status` RunnerEvent so the WS bridge emits a
    * `session_update` frame. Used by:
    *   - the CLI file-watcher which derives status from the JSONL's mtime +

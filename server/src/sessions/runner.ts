@@ -99,6 +99,13 @@ export type RunnerEvent =
         // have a live external `claude` CLI process attached. Never emitted
         // by the AgentRunner.
         | "cli_running";
+      /** Optional title override, carried on the `session_update` frame the
+       *  bridge emits. Lets an out-of-band renamer (the CLI title resync)
+       *  push a new title to every tab's session list without inventing a
+       *  second frame type — `status` is already the sole carrier of
+       *  `session_update`. Omitted on ordinary status transitions, where
+       *  the client keeps the title it already has. */
+      title?: string;
     }
   | { type: "sdk_session_id"; sdkSessionId: string }
   | {
