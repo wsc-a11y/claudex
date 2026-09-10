@@ -20,6 +20,7 @@ import type {
   Routine,
   Session,
   SessionEvent,
+  SessionUserMessagesResponse,
   SlashCommand,
   ToolGrant,
   TotpBeginResponse,
@@ -309,6 +310,17 @@ export const api = {
       method: "POST",
       json: body,
     });
+  },
+  /**
+   * Every user message in the session (seq + text + createdAt), oldest
+   * first. Feeds the rewind/fork picker screen — only user messages are
+   * valid CLI checkpoint anchors, so this is deliberately not the full
+   * transcript.
+   */
+  listUserMessages(sessionId: string) {
+    return request<SessionUserMessagesResponse>(
+      `/api/sessions/${sessionId}/user-messages`,
+    );
   },
   listGrants(sessionId: string) {
     return request<{ grants: ToolGrant[] }>(

@@ -6,6 +6,7 @@ import { HomeScreen } from "@/screens/Home";
 import { ChatScreen } from "@/screens/Chat";
 import { DiffReviewScreen } from "@/screens/DiffReview";
 import { SessionDiffScreen } from "@/screens/SessionDiff";
+import { RewindPickerScreen } from "@/screens/RewindPicker";
 import { SubagentRunScreen } from "@/screens/SubagentRun";
 import { SettingsScreen } from "@/screens/Settings";
 import { AboutScreen } from "@/screens/About";
@@ -128,6 +129,14 @@ export default function App() {
         element={
           <Guard>
             <SessionDiffScreen />
+          </Guard>
+        }
+      />
+      <Route
+        path="/session/:id/rewind"
+        element={
+          <Guard>
+            <RewindPickerScreen />
           </Guard>
         }
       />

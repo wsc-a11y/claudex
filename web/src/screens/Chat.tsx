@@ -20,6 +20,7 @@ import {
   Plus,
   Send,
   Settings2,
+  Undo2,
   StopCircle,
   Terminal,
   Brain,
@@ -1058,6 +1059,9 @@ export function ChatScreen() {
             onOpenSessionDiff={() =>
               session ? navigate(`/session/${id}/session-diff`) : undefined
             }
+            onOpenRewind={() =>
+              session ? navigate(`/session/${id}/rewind`) : undefined
+            }
             onOpenSideChat={() => setShowSideChat(true)}
             onOpenTasks={() => setShowTasks(true)}
             onOpenTerminal={() => setShowTerminal(true)}
@@ -1346,6 +1350,10 @@ export function ChatScreen() {
             setShowMore(false);
             navigate(`/session/${id}/session-diff`);
           }}
+          onOpenRewind={() => {
+            setShowMore(false);
+            navigate(`/session/${id}/rewind`);
+          }}
           onClose={() => setShowMore(false)}
         />
       )}
@@ -1628,12 +1636,14 @@ function PillPicker({
 function DesktopMoreMenu({
   disabled,
   onOpenSessionDiff,
+  onOpenRewind,
   onOpenSideChat,
   onOpenTasks,
   onOpenTerminal,
 }: {
   disabled?: boolean;
   onOpenSessionDiff: () => void;
+  onOpenRewind: () => void;
   onOpenSideChat: () => void;
   onOpenTasks: () => void;
   onOpenTerminal: () => void;
@@ -1684,6 +1694,11 @@ function DesktopMoreMenu({
             icon={<GitCompareArrows className="w-4 h-4 text-ink-soft" />}
             label="会话差异"
             onClick={() => pick(onOpenSessionDiff)}
+          />
+          <MenuRow
+            icon={<Undo2 className="w-4 h-4 text-ink-soft" />}
+            label="回滚 / 分支"
+            onClick={() => pick(onOpenRewind)}
           />
           <MenuRow
             icon={<MessageCircle className="w-4 h-4 text-klein" />}
@@ -1739,12 +1754,14 @@ function ChatMoreSheet({
   onOpenSideChat,
   onOpenTerminal,
   onOpenSessionDiff,
+  onOpenRewind,
   onClose,
 }: {
   onOpenTasks: () => void;
   onOpenSideChat: () => void;
   onOpenTerminal: () => void;
   onOpenSessionDiff: () => void;
+  onOpenRewind: () => void;
   onClose: () => void;
 }) {
   return (
@@ -1764,6 +1781,11 @@ function ChatMoreSheet({
             icon={<GitCompareArrows className="w-4 h-4 text-ink-soft" />}
             label="会话差异"
             onClick={onOpenSessionDiff}
+          />
+          <SheetAction
+            icon={<Undo2 className="w-4 h-4 text-ink-soft" />}
+            label="回滚 / 分支"
+            onClick={onOpenRewind}
           />
           <SheetAction
             icon={<ListChecks className="w-4 h-4 text-ink-soft" />}
@@ -1919,7 +1941,6 @@ function Piece({
           onSubmitEdit={onEditLastUserMessage}
           sessionId={session?.id ?? ""}
           seq={p.seq}
-          rewindable={p.seq != null}
           revealed={p.seq != null && revealedSeq === p.seq}
           onToggleReveal={() => {
             if (p.seq != null) onToggleReveal?.(p.seq);
@@ -3249,7 +3270,6 @@ function UserBubble({
   onSubmitEdit,
   sessionId,
   seq,
-  rewindable,
   revealed,
   onToggleReveal,
   onClearReveal,
@@ -3287,10 +3307,6 @@ function UserBubble({
    * collide. */
   sessionId: string;
   seq?: number;
-  /** Arms the "回滚到此" action on this user message's reveal row — rolls
-   * the session's tracked files back to this message (CLI checkpoint
-   * rewind). Only user bubbles carry it. */
-  rewindable?: boolean;
   /** Click/tap-to-reveal flag — when true, the action chips AND the pencil
    * are shown. Desktop and mobile share this trigger; hover does not
    * reveal anything (see MessageActions class list for the rationale). */
@@ -3547,7 +3563,6 @@ function UserBubble({
           sessionId={sessionId}
           seq={seq}
           align="end"
-          rewindable={rewindable}
           revealed={revealed}
           onActionComplete={onClearReveal}
           createdAt={createdAt ?? undefined}

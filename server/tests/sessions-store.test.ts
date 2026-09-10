@@ -328,6 +328,83 @@ describe("SessionStore", () => {
     expect(sessions.listEvents(s1.id, 0).map((e) => e.id)).toEqual([e2.id]);
   });
 
+  it("listUserMessages returns only user messages, oldest first", () => {
+    const { sessions, project } = bootstrap();
+    const s = sessions.create({
+      title: "picker",
+      projectId: project.id,
+      model: "claude-opus-4-8",
+      mode: "default",
+    });
+    // Interleave other kinds — the picker must see only user_message rows,
+    // because only those are valid CLI checkpoint anchors.
+    sessions.appendEvent({
+      sessionId: s.id,
+      kind: "user_message",
+      payload: { text: "第一条" },
+    });
+    sessions.appendEvent({
+      sessionId: s.id,
+      kind: "assistant_text",
+      payload: { text: "reply" },
+    });
+    sessions.appendEvent({
+      sessionId: s.id,
+      kind: "tool_use",
+      payload: { name: "Bash" },
+    });
+    const second = sessions.appendEvent({
+      sessionId: s.id,
+      kind: "user_message",
+      payload: { text: "第二条" },
+    });
+    // A second session's messages must never leak in.
+    const other = sessions.create({
+      title: "other",
+      projectId: project.id,
+      model: "claude-opus-4-8",
+      mode: "default",
+    });
+    sessions.appendEvent({
+      sessionId: other.id,
+      kind: "user_message",
+      payload: { text: "别串味" },
+    });
+
+    const msgs = sessions.listUserMessages(s.id);
+    expect(msgs.map((m) => m.text)).toEqual(["第一条", "第二条"]);
+    expect(msgs[0].seq).toBe(0);
+    expect(msgs[1].seq).toBe(second.seq);
+    expect(msgs[0].createdAt).toBeTruthy();
+    expect(sessions.listUserMessages(other.id)).toHaveLength(1);
+  });
+
+  it("listUserMessages degrades a corrupt payload to empty text instead of throwing", () => {
+    const { sessions, project } = bootstrap();
+    const s = sessions.create({
+      title: "corrupt",
+      projectId: project.id,
+      model: "claude-opus-4-8",
+      mode: "default",
+    });
+    sessions.appendEvent({
+      sessionId: s.id,
+      kind: "user_message",
+      payload: { text: "good" },
+    });
+    // Simulate a row written by an older/broken producer. One bad row must
+    // not take out the whole picker.
+    (sessions as any).db
+      .prepare(
+        "UPDATE session_events SET payload = ? WHERE session_id = ? AND kind = 'user_message'",
+      )
+      .run("not-json{", s.id);
+
+    const msgs = sessions.listUserMessages(s.id);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("");
+  });
+
   it("cascades events when session is deleted", () => {
     const { sessions, project } = bootstrap();
     const s = sessions.create({

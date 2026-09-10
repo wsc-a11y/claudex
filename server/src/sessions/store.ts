@@ -190,6 +190,7 @@ export class SessionStore {
     findLastEventByKind: Statement | null;
     findEventBySeq: Statement | null;
     countUserMessagesUpTo: Statement | null;
+    listUserMessages: Statement | null;
     deleteEventsAboveSeq: Statement | null;
     updateEventPayload: Statement | null;
     selectEventKind: Statement | null;
@@ -227,6 +228,7 @@ export class SessionStore {
     findLastEventByKind: null,
     findEventBySeq: null,
     countUserMessagesUpTo: null,
+    listUserMessages: null,
     deleteEventsAboveSeq: null,
     updateEventPayload: null,
     selectEventKind: null,
@@ -999,6 +1001,40 @@ export class SessionStore {
          WHERE session_id = ? AND kind = 'user_message' AND seq <= ?`,
     ).get(sessionId, upToSeq) as { c: number } | undefined;
     return row?.c ?? 0;
+  }
+
+  /**
+   * Every `user_message` event in the session, oldest first, projected down
+   * to what the rewind/fork picker needs: seq, text, createdAt. Only user
+   * messages are valid CLI checkpoint anchors, so the picker never has to
+   * see the rest of the transcript.
+   *
+   * The payload is JSON; a row we can't parse degrades to an empty `text`
+   * rather than throwing — one corrupt line must not take out the whole
+   * picker. Timestamps fall back to the event's `created_at`.
+   */
+  listUserMessages(
+    sessionId: string,
+  ): Array<{ seq: number; text: string; createdAt: string }> {
+    const rows = this.lazyStmt(
+      "listUserMessages",
+      `SELECT seq, created_at, payload FROM session_events
+         WHERE session_id = ? AND kind = 'user_message' ORDER BY seq ASC`,
+    ).all(sessionId) as Array<{
+      seq: number;
+      created_at: string;
+      payload: string;
+    }>;
+    return rows.map((row) => {
+      let text = "";
+      try {
+        const parsed = JSON.parse(row.payload) as { text?: unknown };
+        text = String(parsed?.text ?? "");
+      } catch {
+        text = "";
+      }
+      return { seq: row.seq, text, createdAt: row.created_at };
+    });
   }
 
   /**

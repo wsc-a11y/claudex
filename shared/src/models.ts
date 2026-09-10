@@ -1835,6 +1835,23 @@ export const RewindSessionResult = z.object({
 });
 export type RewindSessionResult = z.infer<typeof RewindSessionResult>;
 
+/** One user message in a session, as offered by the rewind/fork picker.
+ *  Only user messages are valid CLI checkpoint anchors, so the picker
+ *  endpoint returns just these — not the whole transcript. */
+export const SessionUserMessage = z.object({
+  seq: z.number().int(),
+  text: z.string(),
+  createdAt: z.string(),
+});
+export type SessionUserMessage = z.infer<typeof SessionUserMessage>;
+
+export const SessionUserMessagesResponse = z.object({
+  messages: z.array(SessionUserMessage),
+});
+export type SessionUserMessagesResponse = z.infer<
+  typeof SessionUserMessagesResponse
+>;
+
 // Body of `POST /api/sessions/:id/edit-last-user-message`. Min length 1 so
 // the endpoint refuses empty-string edits — clearing the message isn't a
 // supported flow; the user should archive instead.

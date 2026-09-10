@@ -10,6 +10,7 @@ import {
   ForkSessionRequest,
   RewindSessionRequest,
   RewindSessionResult,
+  SessionUserMessagesResponse,
   TrustProjectRequest,
   UpdateProjectRequest,
   UpdateSessionRequest,
@@ -319,6 +320,26 @@ export async function registerSessionRoutes(
         oldestSeqAll !== null &&
         batchOldest > oldestSeqAll;
       return { events, hasMore, oldestSeq: batchOldest };
+    },
+  );
+
+  // GET /api/sessions/:id/user-messages
+  //
+  // Lightweight projection of just the session's `user_message` events
+  // (seq + text + createdAt), oldest first. Powers the rewind/fork picker —
+  // only user messages are valid CLI checkpoint anchors, so the picker has
+  // no reason to download the whole transcript.
+  app.get(
+    "/api/sessions/:id/user-messages",
+    { preHandler: app.requireAuth as any },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      if (!sessions.findById(id))
+        return reply.code(404).send({ error: "not_found" });
+      const body: SessionUserMessagesResponse = {
+        messages: sessions.listUserMessages(id),
+      };
+      return body;
     },
   );
 

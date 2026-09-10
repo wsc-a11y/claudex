@@ -26,7 +26,6 @@ import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { api, ApiError } from "@/api/client";
 import { timeAgoShort } from "@/lib/format";
-import { RewindSheet } from "./RewindSheet";
 
 async function copy(text: string, successMsg = "已复制"): Promise<void> {
   // copyText handles the async Clipboard API with a hidden-textarea
@@ -67,12 +66,6 @@ export interface MessageActionsProps {
    * user bubbles with attachments). Lives in the same row so the
    * reserved height covers it too. */
   leading?: React.ReactNode;
-  /**
-   * True on user-message bubbles — arms the "回滚到此" text action that
-   * rewinds the session's tracked files to this message (CLI checkpoint
-   * feature). Only user messages are valid rewind anchors.
-   */
-  rewindable?: boolean;
 }
 
 function buildPermalink(sessionId: string, seq?: number): string {
@@ -127,10 +120,8 @@ export function MessageActions({
   onActionComplete,
   createdAt,
   leading,
-  rewindable = false,
 }: MessageActionsProps): JSX.Element {
   const [forking, setForking] = useState(false);
-  const [showRewind, setShowRewind] = useState(false);
   const navigate = useNavigate();
   // Track mount so an in-flight fork request can't setState after unmount
   // (e.g. user navigates away mid-request). React will warn, and more
@@ -188,17 +179,6 @@ export function MessageActions({
       if (mounted.current) setForking(false);
     }
   };
-  // Rewind this session's tracked files to the checkpoint taken before this
-  // message. Only user messages are anchors — see RewindSheet for the
-  // dryRun-preview → confirm flow.
-  const openRewind = () => {
-    if (seq == null) return;
-    setShowRewind(true);
-  };
-  const closeRewind = () => {
-    setShowRewind(false);
-    done();
-  };
 
   return (
     <div
@@ -245,90 +225,22 @@ export function MessageActions({
         title="复制永久链接"
         onClick={doCopyPermalink}
       />
-      {align === "end" ? (
-        // User bubbles: the fork/rewind affordances read as labeled text
-        // buttons so the "branch here" / "roll code back here" verbs are
-        // discoverable on mobile, where icon-only rows are easy to miss.
-        seq != null ? (
-          <span className="ml-auto flex items-center gap-1.5 pl-2">
-            {rewindable && (
-              <TextAction
-                title="把代码回滚到这条消息时的状态（只回滚文件，对话保留）"
-                onClick={openRewind}
-              >
-                回滚到此
-              </TextAction>
-            )}
-            <TextAction
-              title="从此处创建分支到新会话"
-              disabled={forking}
-              onClick={() => void doFork()}
-            >
-              {forking ? "分支中…" : "从此分支"}
-            </TextAction>
-          </span>
-        ) : null
-      ) : (
-        <>
-          {seq != null && (
-            <ActionIcon
-              icon={GitFork}
-              title="从此处创建分支到新会话"
-              onClick={() => void doFork()}
-              disabled={forking}
-            />
-          )}
-          {createdAt != null && (
-            <span
-              className="mono text-ui-sm text-ink-faint ml-1"
-              title={new Date(createdAt).toLocaleString()}
-            >
-              {timeAgoShort(createdAt)}
-            </span>
-          )}
-        </>
-      )}
-      {showRewind && seq != null && (
-        <RewindSheet
-          sessionId={sessionId}
-          upToSeq={seq}
-          onClose={closeRewind}
+      {seq != null && (
+        <ActionIcon
+          icon={GitFork}
+          title="从此处创建分支到新会话"
+          onClick={() => void doFork()}
+          disabled={forking}
         />
       )}
+      {align !== "end" && createdAt != null && (
+        <span
+          className="mono text-ui-sm text-ink-faint ml-1"
+          title={new Date(createdAt).toLocaleString()}
+        >
+          {timeAgoShort(createdAt)}
+        </span>
+      )}
     </div>
-  );
-}
-
-/**
- * Small labeled action button for the revealed action row. Deliberately
- * quieter than a primary button — it lives in a hover/tap-revealed row.
- */
-function TextAction({
-  title,
-  disabled,
-  onClick,
-  children,
-}: {
-  title: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      disabled={disabled}
-      onClick={(e) => {
-        // Stop the click from bubbling to the bubble wrapper's tap handler
-        // (same rationale as ActionIcon).
-        e.stopPropagation();
-        if (!disabled) onClick();
-      }}
-      className="h-6 px-2 rounded-sm border border-line text-ui text-ink-soft hover:text-ink hover:bg-paper disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
-    >
-      {children}
-    </button>
   );
 }
