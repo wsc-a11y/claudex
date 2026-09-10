@@ -6,8 +6,11 @@ import {
   decodeSlug,
   encodeCwdToSlug,
   listCliSessions,
+  pickTitle,
+  readCliSessionTitle,
   resolveSlugToPath,
   truncateTitle,
+  type TitleRecords,
 } from "../src/sessions/cli-discovery.js";
 
 /**
@@ -248,6 +251,75 @@ describe("listCliSessions", () => {
     expect(result[0].lineCount).toBeGreaterThanOrEqual(3);
   });
 
+  it("prefers the CLI's own ai-title over the first user message", async () => {
+    // The regression that made claudex titles disagree with the VS Code
+    // extension: the CLI writes ai-title records and its own session list
+    // shows THOSE, not the first message.
+    const root = mkTmp("claudex-cli-disc-", disposers);
+    const sessionId = "sess-titled";
+    writeJsonl(root, "-tmp-proj", sessionId, [
+      { type: "user", message: { role: "user", content: "做一个内网隧穿" } },
+      { type: "ai-title", sessionId, aiTitle: "配置内网穿透实现外网访问" },
+    ]);
+    const result = await listCliSessions(root);
+    expect(result[0].title).toBe("配置内网穿透实现外网访问");
+    // The fallback is still reported — it's what the Import sheet shows as
+    // the "first message", independent of the chosen title.
+    expect(result[0].firstUserMessage).toBe("做一个内网隧穿");
+  });
+
+  it("falls back to last-prompt when there is no ai-title", async () => {
+    // Real transcript evidence: ab91b359 has NO ai-title record at all, and
+    // the extension titles it from lastPrompt ("我想了解cloudflare免费性能如何").
+    const root = mkTmp("claudex-cli-disc-", disposers);
+    writeJsonl(root, "-tmp-proj", "sess-lp", [
+      { type: "user", message: { role: "user", content: "做一个内网隧穿" } },
+      { type: "last-prompt", lastPrompt: "我想了解cloudflare免费性能如何" },
+    ]);
+    const result = await listCliSessions(root);
+    expect(result[0].title).toBe("我想了解cloudflare免费性能如何");
+  });
+
+  it("uses the LAST ai-title when the CLI rewrites it mid-session", async () => {
+    // ai-title is re-emitted as the conversation evolves; the value that
+    // counts is the newest one. Stopping the scan early would surface a
+    // stale title.
+    const root = mkTmp("claudex-cli-disc-", disposers);
+    writeJsonl(root, "-tmp-proj", "sess-rewrite", [
+      { type: "user", message: { role: "user", content: "hi" } },
+      { type: "ai-title", aiTitle: "stale title" },
+      { type: "last-prompt", lastPrompt: "some later prompt" },
+      { type: "ai-title", aiTitle: "fresh title" },
+    ]);
+    const result = await listCliSessions(root);
+    expect(result[0].title).toBe("fresh title");
+  });
+
+  it("lets a custom-title stick even when ai-title follows", async () => {
+    // The extension locks the scan on the first custom-title: a user rename
+    // must survive later AI retitling.
+    const root = mkTmp("claudex-cli-disc-", disposers);
+    writeJsonl(root, "-tmp-proj", "sess-custom", [
+      { type: "user", message: { role: "user", content: "hi" } },
+      { type: "custom-title", customTitle: "我改的名字" },
+      { type: "ai-title", aiTitle: "AI 后来又想改的名字" },
+    ]);
+    const result = await listCliSessions(root);
+    expect(result[0].title).toBe("我改的名字");
+  });
+
+  it("ignores title records that aren't strings or are blank", async () => {
+    const root = mkTmp("claudex-cli-disc-", disposers);
+    writeJsonl(root, "-tmp-proj", "sess-blank", [
+      { type: "user", message: { role: "user", content: "real message" } },
+      { type: "ai-title", aiTitle: "" },
+      { type: "ai-title", aiTitle: 42 },
+      { type: "last-prompt", lastPrompt: "   " },
+    ]);
+    const result = await listCliSessions(root);
+    expect(result[0].title).toBe("real message");
+  });
+
   it("truncates a long first user message into a title with ellipsis", async () => {
     const root = mkTmp("claudex-cli-disc-", disposers);
     const longMsg = "a".repeat(200);
@@ -334,5 +406,101 @@ describe("listCliSessions", () => {
     ]);
     const result = await listCliSessions(root);
     expect(result.map((s) => s.sessionId)).toEqual(["sess-real"]);
+  });
+});
+
+describe("pickTitle", () => {
+  const empty: TitleRecords = {
+    customTitle: null,
+    aiTitle: null,
+    lastPrompt: null,
+    summary: null,
+  };
+
+  it("applies the extension's precedence order", () => {
+    expect(
+      pickTitle(
+        {
+          customTitle: "custom",
+          aiTitle: "ai",
+          lastPrompt: "last",
+          summary: "summary",
+        },
+        "first msg",
+      ),
+    ).toBe("custom");
+    expect(
+      pickTitle({ ...empty, aiTitle: "ai", lastPrompt: "last" }, "first msg"),
+    ).toBe("ai");
+    expect(pickTitle({ ...empty, lastPrompt: "last" }, "first msg")).toBe(
+      "last",
+    );
+    expect(pickTitle({ ...empty, summary: "summary" }, "first msg")).toBe(
+      "summary",
+    );
+  });
+
+  it("falls back to the first user message, then null", () => {
+    expect(pickTitle(empty, "first msg")).toBe("first msg");
+    expect(pickTitle(empty, null)).toBeNull();
+    expect(pickTitle(empty, "")).toBeNull();
+  });
+
+  it("treats whitespace-only records as absent", () => {
+    // A blank ai-title must not shadow a perfectly good first message.
+    expect(pickTitle({ ...empty, aiTitle: "   " }, "first msg")).toBe(
+      "first msg",
+    );
+  });
+
+  it("truncates to 60 chars with an ellipsis", () => {
+    const out = pickTitle(empty, "a".repeat(200));
+    expect(out!.length).toBeLessThanOrEqual(61);
+    expect(out!.endsWith("…")).toBe(true);
+  });
+});
+
+describe("readCliSessionTitle", () => {
+  const disposers: Array<() => void> = [];
+  afterEach(() => {
+    while (disposers.length) disposers.pop()!();
+  });
+
+  it("reads ai-title from a JSONL file on disk", async () => {
+    const root = mkTmp("claudex-cli-title-", disposers);
+    writeJsonl(root, "-p", "sess", [
+      { type: "user", message: { role: "user", content: "ask" } },
+      { type: "ai-title", aiTitle: "派生标题" },
+    ]);
+    const title = await readCliSessionTitle(
+      path.join(root, "-p", "sess.jsonl"),
+    );
+    expect(title).toBe("派生标题");
+  });
+
+  it("returns the placeholder when the transcript has nothing usable", async () => {
+    const root = mkTmp("claudex-cli-title-", disposers);
+    writeJsonl(root, "-p", "sess-empty", [{ type: "queue-operation" }]);
+    const title = await readCliSessionTitle(
+      path.join(root, "-p", "sess-empty.jsonl"),
+    );
+    expect(title).toBe("Untitled CLI session");
+  });
+
+  it("survives malformed lines without throwing", async () => {
+    const root = mkTmp("claudex-cli-title-", disposers);
+    const dir = path.join(root, "-p");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "sess-bad.jsonl"),
+      [
+        "not json at all",
+        JSON.stringify({ type: "user", message: { role: "user", content: "ok" } }),
+        "{ broken",
+        JSON.stringify({ type: "ai-title", aiTitle: "还是拿到了" }),
+      ].join("\n") + "\n",
+    );
+    const title = await readCliSessionTitle(path.join(dir, "sess-bad.jsonl"));
+    expect(title).toBe("还是拿到了");
   });
 });

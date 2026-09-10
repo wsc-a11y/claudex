@@ -7,6 +7,7 @@ import { buildApp, defaultWebDist } from "./transport/app.js";
 import { SessionStore } from "./sessions/store.js";
 import { ProjectStore } from "./sessions/projects.js";
 import { backfillSessionTitles } from "./sessions/backfill-titles.js";
+import { backfillCliSessionTitles } from "./sessions/backfill-cli-titles.js";
 import { loadOrCreateVapidKeys } from "./push/vapid.js";
 import { startCliSyncWatcher, type CliSyncWatcher } from "./cli-sync/watcher.js";
 import {
@@ -144,6 +145,24 @@ async function main() {
     );
   } catch (err) {
     log.error({ err }, "session title backfill failed");
+  }
+
+  // Second, narrower pass: CLI-adopted rows still carrying the pre-fix
+  // first-message title get re-derived from the CLI's own `ai-title` /
+  // `custom-title` / `last-prompt` records, matching what the VS Code
+  // extension shows. See backfill-cli-titles.ts. Async (reads JSONL), but
+  // it must land before the first client renders Home, so we await it.
+  try {
+    const cliTitles = await backfillCliSessionTitles({
+      sessions: new SessionStore(db),
+      projects: new ProjectStore(db),
+      logger: log,
+    });
+    log.info(
+      `backfilled CLI titles: ${cliTitles.retitled}/${cliTitles.scanned} sessions retitled`,
+    );
+  } catch (err) {
+    log.error({ err }, "CLI session title backfill failed");
   }
 
   try {

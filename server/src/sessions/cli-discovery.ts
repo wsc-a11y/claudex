@@ -243,8 +243,14 @@ export async function listCliSessions(
 }
 
 /**
- * Scan the first ~20 lines of a JSONL file to pull the first user message.
- * We stop as soon as we have a title to avoid walking multi-MB transcripts.
+ * Scan a JSONL file to pull the first user message AND the title records the
+ * CLI itself writes.
+ *
+ * The whole file is streamed rather than just the head. `aiTitle` and
+ * `lastPrompt` are re-written as the conversation progresses, so the value
+ * that matters is the LAST one in the file — stopping early would surface a
+ * stale title. Streaming keeps this memory-flat; `lineCount` comes free from
+ * the same pass.
  */
 async function summarizeJsonl(
   filePath: string,
@@ -256,20 +262,23 @@ async function summarizeJsonl(
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   let firstUserMessage: string | null = null;
+  const titleRecords: TitleRecords = {
+    customTitle: null,
+    aiTitle: null,
+    lastPrompt: null,
+    summary: null,
+  };
   let lineCount = 0;
-  const maxScan = 40; // head-only; we don't need the full line count for sort
   try {
     for await (const line of rl) {
       lineCount++;
-      if (firstUserMessage === null && lineCount <= maxScan) {
+      if (firstUserMessage === null) {
         const text = extractUserText(line);
         if (text !== null && text.length > 0) {
           firstUserMessage = text;
         }
       }
-      if (firstUserMessage !== null && lineCount >= maxScan) {
-        break;
-      }
+      collectTitleRecord(line, titleRecords);
     }
   } finally {
     rl.close();
@@ -277,9 +286,7 @@ async function summarizeJsonl(
   }
 
   const title =
-    firstUserMessage !== null && firstUserMessage.length > 0
-      ? truncateTitle(firstUserMessage, 60)
-      : "Untitled CLI session";
+    pickTitle(titleRecords, firstUserMessage) ?? "Untitled CLI session";
 
   return {
     sessionId,
@@ -291,6 +298,121 @@ async function summarizeJsonl(
     lastModified: stat.mtime.toISOString(),
     filePath,
   };
+}
+
+/**
+ * Resolve a session title straight from one JSONL file, using the CLI's own
+ * records with the first user message as the fallback. Exported so the
+ * cli-sync watcher (which adopts new sessions the moment their JSONL
+ * appears) produces the same title the Import sheet would — otherwise the
+ * two adoption paths drift and the same session gets named differently
+ * depending on how it arrived.
+ */
+export async function readCliSessionTitle(filePath: string): Promise<string> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let firstUserMessage: string | null = null;
+  const titleRecords: TitleRecords = {
+    customTitle: null,
+    aiTitle: null,
+    lastPrompt: null,
+    summary: null,
+  };
+  try {
+    for await (const line of rl) {
+      if (firstUserMessage === null) {
+        const text = extractUserText(line);
+        if (text !== null && text.length > 0) firstUserMessage = text;
+      }
+      collectTitleRecord(line, titleRecords);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return pickTitle(titleRecords, firstUserMessage) ?? "Untitled CLI session";
+}
+
+/** The CLI's own title-bearing records, in the precedence order the VS Code
+ *  extension uses (`customTitle` → `aiTitle` → `lastPrompt` → `summary`). */
+export interface TitleRecords {
+  customTitle: string | null;
+  aiTitle: string | null;
+  lastPrompt: string | null;
+  summary: string | null;
+}
+
+/**
+ * Fold one parsed JSONL line into `out` if it carries a title. Mirrors the
+ * extension's scanner exactly: `custom-title` is sticky (a user rename wins
+ * from then on, and later `ai-title` records must not clobber it — hence the
+ * explicit null check rather than an unconditional assign).
+ */
+function collectTitleRecord(line: string, out: TitleRecords): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  // Cheap pre-filter before JSON.parse. Deliberately loose: it only has to
+  // reject ordinary transcript lines (user/assistant/tool traffic), which
+  // never carry these field names. Note a case-sensitive `"title"` needle
+  // would be wrong — the fields are camelCase (`aiTitle`, `customTitle`), so
+  // it matches nothing and silently drops every record.
+  if (!/Title|Prompt|summary/.test(trimmed)) return;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  switch (obj.type) {
+    case "custom-title":
+      // Sticky: first write wins, later ai-title must not override a rename.
+      if (out.customTitle === null && typeof obj.customTitle === "string") {
+        out.customTitle = obj.customTitle;
+      }
+      break;
+    case "ai-title":
+      if (typeof obj.aiTitle === "string") out.aiTitle = obj.aiTitle;
+      break;
+    case "last-prompt":
+      if (typeof obj.lastPrompt === "string") out.lastPrompt = obj.lastPrompt;
+      break;
+    case "summary":
+      if (typeof obj.summary === "string") out.summary = obj.summary;
+      break;
+  }
+}
+
+/**
+ * Resolve the best title for a session from the CLI's own records, falling
+ * back to the first user message. Order is the VS Code extension's (see its
+ * `s = n || lastPrompt || summaryHint || firstPrompt`):
+ *
+ *   customTitle → aiTitle → lastPrompt → summary → first user message
+ *
+ * `aiTitle` is what the extension shows for sessions the CLI has titled;
+ * `lastPrompt` is the resume hint and is the only source on transcripts the
+ * CLI never titled (no `ai-title` record) — without it those sessions would
+ * fall back to a first message that can be harness noise.
+ *
+ * Returns null when nothing usable exists.
+ */
+export function pickTitle(
+  records: TitleRecords,
+  firstUserMessage: string | null,
+): string | null {
+  const candidate =
+    records.customTitle ??
+    records.aiTitle ??
+    records.lastPrompt ??
+    records.summary ??
+    null;
+  if (candidate !== null && candidate.trim().length > 0) {
+    return truncateTitle(candidate, 60);
+  }
+  if (firstUserMessage !== null && firstUserMessage.length > 0) {
+    return truncateTitle(firstUserMessage, 60);
+  }
+  return null;
 }
 
 /**

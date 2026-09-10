@@ -8,6 +8,7 @@ import type { ProjectStore } from "../sessions/projects.js";
 import type { SessionManager } from "../sessions/manager.js";
 import {
   defaultCliProjectsRoot,
+  readCliSessionTitle,
   resolveSlugToPath,
 } from "../sessions/cli-discovery.js";
 import { importCliSession } from "../sessions/cli-import.js";
@@ -569,51 +570,14 @@ async function tailLastJsonlLines(
   }
 }
 
+/**
+ * Title for a freshly-observed JSONL. Delegates to the shared resolver in
+ * cli-discovery so the watcher and the Import sheet name the same session
+ * identically (CLI `ai-title` / `custom-title` records first, first user
+ * message as the fallback).
+ */
 async function firstUserMessageTitle(absPath: string): Promise<string> {
-  const readline = await import("node:readline");
-  const stream = fs.createReadStream(absPath, { encoding: "utf-8" });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  let n = 0;
-  try {
-    for await (const line of rl) {
-      n++;
-      if (n > 40) break;
-      try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        if (obj.type !== "user") continue;
-        const msg = obj.message as Record<string, unknown> | undefined;
-        if (!msg || msg.role !== "user") continue;
-        const c = msg.content;
-        const text =
-          typeof c === "string"
-            ? c
-            : Array.isArray(c)
-              ? (c.find(
-                  (b) =>
-                    b &&
-                    typeof b === "object" &&
-                    (b as Record<string, unknown>).type === "text",
-                ) as Record<string, unknown> | undefined)?.text
-              : undefined;
-        if (typeof text === "string" && text.trim().length > 0) {
-          return truncate(text.replace(/\s+/g, " ").trim(), 60);
-        }
-      } catch {
-        continue;
-      }
-    }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
-  return "Untitled CLI session";
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  const cut = s.slice(0, max);
-  const sp = cut.lastIndexOf(" ");
-  return (sp > max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s.,;:!?-]+$/, "") + "…";
+  return readCliSessionTitle(absPath);
 }
 
 async function locateJsonl(
