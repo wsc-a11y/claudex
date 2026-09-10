@@ -4982,15 +4982,10 @@ function Composer({
           会话出错 — 请新建会话以继续。
         </div>
       )}
-      {isCliRunning && !isArchived && !isErrored && (
-        <div
-          className="text-ui text-klein-ink px-3 py-1 border-t border-line bg-klein-wash/40 flex items-center gap-1.5"
-          role="status"
-        >
-          <span aria-hidden="true">●</span>
-          此会话正被外部 CLI 占用(VSCode / 终端)——请到那边继续,退出后即可从这里接管。
-        </div>
-      )}
+      {/* cli_running deliberately has NO banner — the locked composer's
+          placeholder already carries the "occupied" message and the banner
+          ate vertical space on mobile. Status stays visible via the Chat
+          header dot + Home "被占用" pill. */}
 
       <div
         className="shrink-0 border-t border-line bg-canvas px-3 pt-2 pb-3 mt-2 md:px-5 md:pt-3 md:pb-4"
